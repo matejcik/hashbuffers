@@ -21,14 +21,14 @@ parts.
 
 The wire format is designed in a way that allows zero-copy reading on a
 little-endian platform (which is the overwhelming majority of contemporary
-platforms, including ARM based microcontrollers), allowing readers to skip
+platforms, including ARM based microcontrollers), allowing readers to skip the
 parsing step and avoid additional memory allocations.
 
 Understanding the encoded data structure depends on knowledge of the schema. A
 schema-less reader can only understand the structure enough to reliably follow
 all links and fetch all the data.
 
-We assume that the reader and the writer agree on the schema schema for the data
+We assume that the reader and the writer agree on the schema for the data
 structure, and their communication protocol allows (a) transfer of an initial
 block (or just a commitment) and (b) requesting any block by its digest.
 
@@ -36,14 +36,23 @@ block (or just a commitment) and (b) requesting any block by its digest.
 
 The format is designed to **provide access** to any data structure chosen by the
 writer. It specifically does not concern itself with *validity* nor *provenance*
-of the data beyond its encoding. An untrusted writer can use the format and
-protocol to transfer any data to the reader, it is up to the reader to
-critically examine it.
+of the data beyond its encoding. If produced by an untrusted writer, the data
+should still be considered untrusted.
 
-The format does not provide any chain of trust, beyond the fact that the initial
-block (which can be reduced to a digest) commits to the whole content of the
-structure. If a chain of trust is required, it is up to the users to establish
-it on top of the format.
+Canonicalization is a non-goal, there are multiple equally valid representations
+of the same data. The format **commits to a particular representation** of a
+given data structure, valid for a single session (see [Hashing](#hashing)).
+Because the hashes expire after the session ends, it makes little sense to
+reproduce an identical representation of the data structure at a later time.
+
+The spec does not generally prohibit format abuses such as overlapping offsets,
+as long as a compliant reader can parse the content unambiguously. The thinking
+goes, if a legitimate writer could encode the same data in some other way, it's
+a non-attack.
+
+The format guarantees immutability of the content, but does not by itself
+provide any chain of trust. If required, it is up to the users to establish it
+on top of the format.
 
 # Data types
 
@@ -62,7 +71,7 @@ requirement is their size.
 
 ## Tagged u16
 
-A **tagged u16,** denoted `t16`, is an u16 value with the following structure:
+A **tagged u16,** denoted `t16`, is a u16 value with the following structure:
 
 - `parameters` 3 bits
 - `number` 13 bits
@@ -114,7 +123,7 @@ value size**, relative to start of the block.
 contained inside it,** so that the alignment relative to block start is also
 correct for any values and sub-sub-blocks inside it.
 
-Writer is free to insert padding bytes to ensure the alignment.
+The writer is free to insert padding bytes to ensure the alignment.
 
 A zero-copy reader may then place the block in memory so that the alignment
 holds for the target platform — that is, block start must be aligned to platform
@@ -122,8 +131,22 @@ holds for the target platform — that is, block start must be aligned to platfo
 
 Reader SHOULD perform platform-appropriate alignment checks to ensure that a
 primitive value will be read out correctly; more specifically, it MUST NOT
-attempt a load values from unaligned addresses if there is risk of reading out
-invalid value.
+attempt to load values from unaligned addresses if there is a risk of reading
+out invalid value.
+
+## Bounds checking
+
+When accessing data within a block, readers MUST check bounds: any sort of read
+MUST NOT exceed the limits of the containing block. In particular:
+
+* intra-block offsets MUST NOT point beyond the end of the block
+* where applicable, offsets MUST point inside the heap
+  - in particular, offset 0 that points to the block itself is not allowed
+* when reading a sub-block, the block MUST fit inside the parent block
+
+Readers MUST reject blocks that violate these bounds.
+
+Sub-blocks within a block MAY overlap _each other_ arbitrarily.
 
 ## Block header
 
@@ -137,7 +160,7 @@ size:
 The `size` includes the 2-byte block header itself. I.e., the maximum size of a
 block with header is 8191 bytes.
 
-(Implicitly, the minimum value of `size` must be 2, for the block header itself.)
+(Implicitly, the minimum valid size of a block is 2.)
 
 ## Offsets
 
@@ -160,13 +183,24 @@ Non-delimited array spanning the `size` of the block
 
 `[t16 block_header] [data...]`
 
-`data` may start with padding to achieve proper alignment of the first
-element of the array:
+`DATA` blocks represent arrays of fixed-size elements. The array has an _element
+size_ and _alignment_ defined by the schema. Writers MUST add padding:
 
-- array data starts at offset `start_offset = max(align, 2)`
-- element count is `count = (size - start_offset) / elem_size`
+* after the block header, to achieve the required alignment for the first
+  element, and
+* after each element, if its size is not a multiple of its alignment.
 
-Information about alignment and element size is provided by schema.
+To achieve that, the following values are defined:
+
+- array data starts at offset `start_offset = max(align, 2)`, to account for the
+  block header
+- `padded_element_size` is the element size rounded up to the nearest multiple of
+  its alignment
+- element count is `count = (size - start_offset) / padded_element_size`
+
+Readers MUST reject blocks whose size is not a multiple of
+`padded_element_size`. (This is to simplify reader implementation, at the cost
+of wasted padding bytes at the end of the block.)
 
 ### `0b10 SLOTS`
 
@@ -223,7 +257,7 @@ have non-zero `limit`.
 In an inner node, the meaning of the link’s `limit` field is a cumulative count
 of content up to and including the current link. This is to facilitate efficient
 binary search: an item with index `N` will be found under the link whose `limit`
-is the smallest such that `limit < N` (`limit` is exclusive so for `limit == N`,
+is the smallest such that `limit > N` (`limit` is exclusive so for `limit == N`,
 the item `N` will be under the next link).
 
 Readers MUST reject the block if
@@ -290,7 +324,7 @@ Values `0b001` `0b010` and `0b011` are reserved for future use.
 
 # Arbitrary size arrays
 
-Unlike structs, which are limited to a single 8 kB block, the format can
+Unlike structs, which are limited to a single 8 KiB block, the format can
 represent arrays of up to 2^32 elements.
 
 ## Link trees
@@ -302,8 +336,9 @@ array of links. Each link points to:
 2. leaf node: a `DATA`, `SLOTS`, or a leaf-parent `LINKS` block that carries
    individual elements of the array.
 
-Writers SHOULD balance the tree, but the format makes no such requirement;
-in particular, inner nodes and leaf nodes can be intermixed at the same level.
+Writers SHOULD balance the tree, but the format permits unbalanced trees. In
+particular, inner nodes and leaf nodes are allowed to be intermixed at the same
+level.
 
 (Note however that a "leaf node" in a `LINKS` tree is a leaf-parent `LINKS`
 block; it is not allowed to place a `limit == 0` leaf link into a node whose
@@ -327,13 +362,13 @@ descend down into inner nodes in order to locate the leaf containing that elemen
 
 Each `LINKS` block defines its own *local* index space starting at 0. A link’s
 `limit` is a cumulative count in that enclosing `LINKS` block (not a global
-index). In order to correctly determine the global index, implementations have to
-track a global offset when descending into inner nodes.
+index). To correctly determine the global index, readers need to track a global
+offset when descending into inner nodes.
 
 When descending into a link, implementations MUST:
 
-1. Calculate _stated content length_ of the link, by subtracting its `limit`
-   from the previous link's `limit` (or 0 if this is the first link).
+1. Calculate _stated content length_ of the link, by subtracting from its
+   `limit` the previous link's `limit`, if any.
 2. Verify that the pointed-to block's content length matches the stated
    content length, and reject the data structure if it doesn't.
 
@@ -356,8 +391,8 @@ the value itself.
 
 When linking to an array, the link's `limit` field is the count of elements in
 the array. Links to arrays with `limit == 0` are not allowed and readers MUST
-reject such data. (Zero-length arrays can be represented as a `DIRECT` pointing
-to an empty `LINKS` block.)
+reject such data. (Zero-length arrays can be stored as a `BLOCK` containing an
+empty `DATA` or `SLOTS` block.)
 
 In all cases, the link may either point to a block that is a leaf node (that is,
 a `DATA`, `SLOTS`, or a leaf-parent `LINKS` block), or to a root of a link tree.
@@ -401,21 +436,37 @@ The following types of floats are allowed: `f32` `f64`
 
 Floats are stored as `DIRECT`.
 
-### Fixed-size arrays of fixed-size elements
+### Fixed-size arrays
+
+#### Arrays of primitives
 
 An array of fixed-size elements can be stored as `DIRECT`, if it fits inside the
-block (see Fitting).
+block (see [Fitting](#fitting)).
 
 Arrays that can fit inside a block SHOULD NOT be stored as `BLOCK`.
 
 Arrays that do not fit inside a block are stored as `LINK` to an arbitrary size
 `DATA` array.
 
-A fixed-size array of fixed-size elements is itself considered a fixed-size
-type, and as such, an arbitrarily deeply nested fixed-size array of fixed-size
-arrays can be stored as flat data, as specified above.
+An array has an alignment equal to its element's alignment.
 
-The alignment of any such array is the alignment of its primitive element.
+#### Arrays of non-primitive fixed-size types
+
+Implementations MAY define fixed-size types that are not primitives (such as
+tuples or packed structs). Such types MUST specify their alignment requirements.
+
+A fixed-size array of fixed-size elements is itself considered a fixed-size
+type, and may be an element of another array. When other constraints allow,
+such arrays-of-arrays can be stored as flat data.
+
+The alignment of such arrays is equal to the alignment of their element.
+
+If a single element is larger than half of a block (4 KiB) (i.e., one block can
+fit just one element), writers SHOULD represent this array as a variable-size
+array of links. If elements are larger than a block (8 KiB), writers MUST use
+that representation. (See [Arrays](#arrays).)
+
+Otherwise, rules for fixed-size arrays of primitives apply.
 
 ## String types
 
@@ -431,8 +482,8 @@ Variable-size byte strings are stored as arrays of `u8` (see below).
 
 ## Arrays
 
-Fixed-size arrays of fixed-size elements are considered a fixed-size type, and
-described under [Fixed-size arrays section](#fixed-size-arrays-of-fixed-size-elements).
+Fixed-size arrays of primitives or small fixed-size elements are considered a
+fixed-size type, and described under [Fixed-size arrays](#fixed-size-arrays).
 
 All other arrays are stored as variable-size. In particular, if a schema
 prescribes a fixed size to an array of variable-size elements, the wire format
@@ -664,7 +715,7 @@ which may cause stack overflows.
 We note that it is possible to traverse an arbitrarily deep structure safely, by
 following the links and evicting blocks from memory as they are read. The reader
 can always retain just the root block of the entire structure, plus an index
-into a particluar deep link tree, which gives it an ability to always reach the
+into a particular deep link tree, which gives it an ability to always reach the
 same place by re-starting from the root.
 
 It is up to the reader to not implement schemas that are inherently too deep for
