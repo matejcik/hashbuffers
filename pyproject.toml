@@ -1,0 +1,28 @@
+[project]
+name = "wire-format"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "matejcik", email = "ja@matejcik.cz" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "construct>=2.10.70",
+    "construct-classes>=0.2.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "black>=26.3.1",
+    "construct-typing>=0.7.0",
+    "isort>=8.0.1",
+    "pytest>=9.0.2",
+]
+
+[tool.isort]
+profile = "black"
