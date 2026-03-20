@@ -7,9 +7,8 @@ The purpose of this wire format is to enable resource-constrained devices, such
 as hardware cryptocurrency signers, to securely and efficiently access data
 structures much larger than their memory.
 
-The format splits the data structure into blocks with a maximum size of 8192
-bytes, replacing large sub-structures with content-addressed links to other
-blocks.
+The format splits the data structure into blocks with a maximum size of 8 KiB,
+replacing large sub-structures with content-addressed links to other blocks.
 
 The maximum total size of the data structure is effectively unlimited. The
 maximum size of any single array is 2^32 elements; in particular, the maximum
@@ -72,7 +71,7 @@ A **tagged u16,** denoted `t16`, is an u16 value with the following structure:
 
 `number` denotes a size or an offset into a block (or, in struct context, can be
 overloaded to specify an inline numeric value). This means that the maximum size
-/ offset within a block is 8192 bytes.
+/ offset within a block is 8191 bytes.
 
 Negative offsets are not supported.
 
@@ -136,7 +135,7 @@ size:
 - `size` 13 bits
 
 The `size` includes the 2-byte block header itself. I.e., the maximum size of a
-block with header is 8192 bytes.
+block with header is 8191 bytes.
 
 (Implicitly, the minimum value of `size` must be 2, for the block header itself.)
 
@@ -500,6 +499,161 @@ different types and stored differently.
 A tagged union type is just a struct whose all members are optional. The writer
 is responsible for encoding exactly one member, and the reader needs to check
 that this is the case.
+
+# Fitting
+
+When serializing a data structure, the writer must map the logical structure to
+physical blocks. Because the maximum block size is ~8 KiB, large structures
+must be split across multiple blocks joined by links. The process of deciding
+what fits in the current block and what gets externalized is called _fitting_.
+
+Fitting proceeds bottom-up: a field's encoded size is only known after it has
+been serialized, so writers MUST serialize children (sub-structs, arrays) before
+the parent struct that contains them.
+
+The _encoded size_ of a field is the total number of bytes it occupies in a
+block: for a primitive, its byte width; for a sub-block (sub-struct or inline
+array), the block size including its 2-byte block header; for a link, 36 bytes.
+
+## Struct Member Fitting
+
+When building a `STRUCT` block, the writer must determine which members are
+stored inline, which are placed on the struct's heap (`DIRECT` or `BLOCK`), and
+which are externalized as `LINK`s to other blocks.
+
+The following rules apply:
+
+1. **Inline values:** Primitive integers that fit within 13 bits SHOULD be
+   stored as `INLINE`.
+
+2. **Small values:** Any field (primitive, array, string, or sub-struct) whose
+   encoded size is no larger than the size of a Link (36 bytes) MUST NOT be
+   externalized as a `LINK`. It MUST be stored on the heap as `DIRECT` or
+   `BLOCK` (depending on the type), because the link would be at least as large
+   as the data it points to, while adding child block overhead.
+
+3. **Filling the remaining space:** For fields too large to be considered
+   "small values" but not required to be linked, the writer must decide how to
+   utilize the remaining space in the block.
+   - Determining the globally optimal packing is a variation of the knapsack
+     problem.
+   - A recommended heuristic is **"smallest first"**: evaluate the size of all
+     remaining fields, and add them to the heap in increasing order of size
+     until the block is full. Any fields that do not fit MUST be externalized
+     as `LINK`s to newly allocated blocks.
+   - **Rationale:** Every externalized field adds at least 38 bytes of global
+     overhead (a 36-byte link on the parent's heap, plus a 2-byte block header
+     in the child block, plus padding), and requires an additional storage
+     access for the reader. Greedily placing the smallest fields first
+     maximizes the number of fields kept inline, minimizing both the global
+     storage footprint and the total number of linked blocks.
+   - *Note:* This heuristic does not account for alignment padding — a set
+     of small fields may require more padding than fewer larger fields. Writers
+     that need tighter packing MAY use alignment-aware size estimates or solve
+     the knapsack with a dynamic programming approach, which is tractable given
+     typical field counts and the small block capacity.
+
+4. **Alignment packing:** When placing `DIRECT` or `BLOCK` fields on the heap,
+   writers SHOULD order them to minimize padding bytes, using the following
+   algorithm:
+   - Separate all heap-bound fields into groups based on their required
+     alignment: 8, 4, 2, and 1.
+   - Keep track of the `current_offset` on the heap (which starts at `4 + 2 *
+     vtable_count`).
+   - Loop while there are unallocated fields:
+     - Determine the available alignment at `current_offset`. For instance, if
+       `current_offset` is a multiple of 8, the available alignment is 8. If
+       `current_offset` is 12 (a multiple of 4 but not 8), the available
+       alignment is 4. (Available alignment is capped at 8.)
+     - Among the remaining fields, prefer the one with the highest alignment
+       requirement that fits the available alignment. As a secondary
+       tie-breaker within the same alignment class, prefer fields whose size
+       is a multiple of their alignment ("alignment-preserving" fields), since
+       they do not degrade the offset alignment for subsequent placements.
+     - If a suitable field is found, place it at `current_offset` and advance
+       by the field's size.
+     - If no remaining field fits without violating its alignment, add 1 byte
+       of padding and try again.
+
+   *Note: This algorithm handles sub-blocks whose sizes are not multiples of
+   their alignment. The irregular trailing offsets naturally get filled with
+   smaller, less strictly aligned fields, avoiding large padding gaps.*
+
+   Because alignment interactions are order-dependent, no simple greedy rule
+   is optimal in all cases. Writers MAY try all permutations of heap-bound
+   fields (feasible for typical field counts) to find the minimum-padding
+   arrangement.
+
+Because alignment padding (step 4) affects total heap consumption, writers
+SHOULD account for padding when evaluating whether fields fit in step 3. A
+practical approach is to interleave the two: run the alignment packing algorithm
+on the candidate set of fields, and if the result exceeds the block size, drop
+the largest non-mandatory field and retry.
+
+## Array Representation
+
+As described in [Arrays](#arrays), array elements can be represented as
+fixed-size `DATA`, variable-size `SLOTS`, or individually linked via `LINKS`.
+The following algorithms recommend a specific choice and describe how to build
+each representation.
+
+### 1. Fixed-Size Primitives (`DATA`)
+
+If the array elements are fixed-size primitive values (e.g., `u32`, `f64`), the
+array MUST be represented as `DATA`.
+- Serialize elements contiguously.
+- If the total size exceeds the block size limit, chunk the array into
+  block-sized `DATA` blocks and build a `LINKS` tree whose leaves point to
+  those `DATA` blocks.
+
+### 2. Variable-Sized or Sub-Struct Elements (`SLOTS` vs `LINKS`)
+
+If the array elements are variable-sized (e.g., strings) or sub-structs, the
+writer must choose between a `SLOTS` tree and a `LINKS` tree.
+- Use a **`LINKS` tree** if:
+  - The schema requires elements to be independently content-addressable or
+    heavily deduplicated.
+  - The average serialized element size is large (roughly > 1024 bytes as a
+    guideline), making the 36-byte link overhead per element negligible.
+- Use a **`SLOTS` tree** if:
+  - The array consists of many small elements (e.g., short strings or small
+    inline structs), where `SLOTS` saves ~36 bytes of link overhead per
+    element.
+  - The typical access pattern involves sequential iteration rather than random
+    indexing.
+
+Since element sizes are known at this point (fitting is bottom-up), writers MAY
+compute the actual storage cost of both representations and choose the cheaper
+one, rather than relying on the approximate threshold above.
+
+#### Building a `SLOTS` Tree
+
+This algorithm assumes every element fits in a single `SLOTS` block (see
+[Slots of a slotted array](#2-slots-of-a-slotted-array)).
+
+1. Initialize an empty `SLOTS` block buffer.
+2. Iterate through the elements:
+   - Serialize the element.
+   - If adding the element (plus its offset) to the current buffer would exceed
+     the block size limit, finalize the current buffer into a `SLOTS` block and
+     start a new one.
+   - Append the element to the current buffer.
+3. Finalize the last buffer. If multiple `SLOTS` blocks were created, build a
+   `LINKS` tree connecting them as leaf nodes.
+
+#### Building a `LINKS` Tree
+A `LINKS` tree has two distinct node types: leaf-parents and inner nodes. The
+tree is built bottom-up:
+1. Serialize each element into its own block (or tree of blocks if the element
+   is very large). Collect the resulting `LINK`s.
+2. Group the element links into leaf-parent `LINKS` blocks (up to ~227 links
+   per block). These MUST have the `leaf_parent` bit set, and all link `limit`
+   fields MUST be `0`.
+3. If all elements fit into a single leaf-parent block, it is the root.
+4. Otherwise, collect the links to leaf-parent blocks and group them into inner
+   `LINKS` blocks. These MUST have `leaf_parent` unset, and each link's `limit`
+   MUST be the cumulative element count up to and including that link.
+5. Repeat recursively until a single root `LINKS` node remains.
 
 # Note on deep nesting
 
