@@ -81,3 +81,12 @@ def test_decode_rejects_trailing_data():
     encoded = DataBlock.build(b"x").encode()
     with pytest.raises(IOError, match="Unparsed trailing data"):
         DataBlock.decode(encoded + b"trailing")
+
+
+def test_zero_length_array_as_empty_data_block():
+    """Spec: zero-length arrays can use an empty DATA block (via BLOCK wrapper)."""
+    empty = DataBlock.build_array([], align=4)
+    assert empty.size == 2 + (max(4, 2) - 2)  # header + alignment padding only
+    roundtrip = DataBlock.decode(empty.encode())
+    assert roundtrip.array_length(elem_size=1, align=4) == 0
+    assert roundtrip.get_array(elem_size=1, align=4) == []

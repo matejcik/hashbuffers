@@ -2,7 +2,7 @@
 
 import pytest
 
-from wire_format.codec import DataBlock, SlotsBlock, Tagged16
+from wire_format.codec import BlockType, DataBlock, SlotsBlock, Tagged16
 
 
 def test_encode_decode_slots_block():
@@ -138,3 +138,14 @@ def test_decode_rejects_trailing_data():
     encoded = block.encode()
     with pytest.raises(IOError, match="Unparsed trailing data"):
         SlotsBlock.decode(encoded + b"extra")
+
+
+def test_slots_block_sub_block_declared_size_exceeds_parent():
+    """Nested block header size must not extend past the enclosing SLOTS block."""
+    inner = DataBlock.build(b"x")
+    block = SlotsBlock.build_blocks([inner])
+    encoded = bytearray(block.encode())
+    heap_start = SlotsBlock.heap_start(block.offsets)
+    encoded[heap_start : heap_start + 2] = BlockType.DATA.encode(5000)
+    with pytest.raises(IOError, match="Expected to read to offset"):
+        SlotsBlock.decode(bytes(encoded))

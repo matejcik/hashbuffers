@@ -3,6 +3,7 @@
 import pytest
 
 from wire_format.codec import (
+    BlockType,
     DataBlock,
     Link,
     Tagged16,
@@ -181,4 +182,39 @@ def test_direct_offset_out_of_bounds():
         b"small",
     )
     with pytest.raises(ValueError, match="out of bounds"):
+        block.validate()
+
+
+def test_struct_block_heap_pointer_offset_zero_rejected():
+    """Spec bounds: offset 0 is the block header, not a heap pointer."""
+    block = StructBlock.build(
+        [VTableEntry(VTableEntryType.DIRECT, 0)],
+        b"heap",
+    )
+    with pytest.raises(ValueError, match="out of bounds"):
+        block.validate()
+
+
+def test_struct_block_nested_block_declared_size_exceeds_parent():
+    """Sub-block wire size must fit inside the parent block (bounds checking)."""
+    heap_start = 4 + 2 * 1
+    inner = DataBlock.build(b"x")
+    inner_bytes = bytearray(inner.encode())
+    inner_bytes[0:2] = BlockType.DATA.encode(5000)
+    block = StructBlock.build(
+        [VTableEntry(VTableEntryType.BLOCK, heap_start)],
+        bytes(inner_bytes),
+    )
+    with pytest.raises(IOError, match="Expected to read to offset"):
+        block.validate()
+
+
+def test_struct_block_link_payload_truncated():
+    """LINK entry must have a full 36-byte encoding inside the parent."""
+    heap_start = 4 + 2 * 1
+    block = StructBlock.build(
+        [VTableEntry(VTableEntryType.LINK, heap_start)],
+        b"\x00" * 10,
+    )
+    with pytest.raises(IOError, match="Expected 32 bytes"):
         block.validate()
