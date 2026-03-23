@@ -125,6 +125,8 @@ correct for any values and sub-sub-blocks inside it.
 
 The writer is free to insert padding bytes to ensure the alignment.
 
+Only power-of-two alignments are supported.
+
 A zero-copy reader may then place the block in memory so that the alignment
 holds for the target platform — that is, block start must be aligned to platform
 `max_align_t` (typically 8 or 16 bytes).
