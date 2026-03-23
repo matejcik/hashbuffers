@@ -1,62 +1,62 @@
-Wire format specification draft
-===============================
+Hashbuffers: an efficient, content-addressed wire format
+========================================================
 
-# Overview and motivation
+## Overview and motivation
 
-The purpose of this wire format is to enable resource-constrained devices, such
-as hardware cryptocurrency signers, to securely and efficiently access data
+The purpose of Hashbuffers is to enable resource-constrained devices, such as
+hardware cryptographic signers, to reliably and efficiently access data
 structures much larger than their memory.
 
 The format splits the data structure into blocks with a maximum size of 8 KiB,
-replacing large sub-structures with content-addressed links to other blocks.
+replacing large sub-structures with hash-based links to other blocks. A host
+device (usually in a writer role) serves as a block repository, which the
+constrained device (typically in a reader role) can query by hash.
 
 The maximum total size of the data structure is effectively unlimited. The
 maximum size of any single array is 2^32 elements; in particular, the maximum
-size of any given text string or byte array is therefore 4 GiB.
+size of a single byte array is 4 GiB.
 
-Because the sub-blocks are content-addressed, the reader can verify that
-repeated access to the same block returns the exact same content. The reader
-therefore doesn't need to store all the data to be able to re-read earlier
-parts.
+Understanding the encoded data structure requires schema separate from the data.
+A schema-less reader can only understand the structure enough to reliably follow
+links and fetch all the data.
 
-The wire format is designed in a way that allows zero-copy reading on a
-little-endian platform (which is the overwhelming majority of contemporary
-platforms, including ARM based microcontrollers), allowing readers to skip the
-parsing step and avoid additional memory allocations.
+The format is designed for zero-copy reading on little-endian platforms.
 
-Understanding the encoded data structure depends on knowledge of the schema. A
-schema-less reader can only understand the structure enough to reliably follow
-all links and fetch all the data.
+### Goals
 
-We assume that the reader and the writer agree on the schema for the data
-structure, and their communication protocol allows (a) transfer of an initial
-block (or just a commitment) and (b) requesting any block by its digest.
+A malicious writer or block repository should not be able to cause security
+issues for the reader.
 
-## Non-goals
+The format is designed so that after an up-front validation of received data, it
+is possible to blindly access fields and indices in a zero-copy manner without
+risk of buffer overflows or other memory corruptions.
 
-The format is designed to **provide access** to any data structure chosen by the
-writer. It specifically does not concern itself with *validity* nor *provenance*
-of the data beyond its encoding. If produced by an untrusted writer, the data
-should still be considered untrusted.
+By providing the root of a data structure, the writer commits to its entire
+content. This specifically prevents a certain class of TOCTOU attacks, where a
+malicious block repository would present one version of data in an initial phase
+of reader's processing, and a different version in a later phase.
+
+### Non-goals
+
+The format itself does not provide confidentiality. In particular, a block
+repository **can record access patterns**, which in some scenarios could leak
+cryptographically sensitive information.
 
 Canonicalization is a non-goal, there are multiple equally valid representations
 of the same data. The format **commits to a particular representation** of a
-given data structure, valid for a single session (see [Hashing](#hashing)).
-Because the hashes expire after the session ends, it makes little sense to
-reproduce an identical representation of the data structure at a later time.
+given data structure, valid for a single session (see [Hashing](#hashing)). Due
+to session-bound keys, re-encoding the same data at a later time will
+necessarily produce different bytes; as such, canonicalization would be of
+limited value.
 
 The spec does not generally prohibit format abuses such as overlapping offsets,
 as long as a compliant reader can parse the content unambiguously. The thinking
-goes, if a legitimate writer could encode the same data in some other way, it's
-a non-attack.
+goes, if a legitimate writer could encode that same data in some other way, it's
+a non-issue.
 
-The format guarantees immutability of the content, but does not by itself
-provide any chain of trust. If required, it is up to the users to establish it
-on top of the format.
+## Data types
 
-# Data types
-
-## Primitives
+### Primitives
 
 The format supports primitive values of 1, 2, 4, or 8 bytes.
 
@@ -69,7 +69,7 @@ Depending on context, these may be interpreted as:
 All values are stored in **little-endian** byte order, and their alignment
 requirement is their size.
 
-## Tagged u16
+### Tagged u16
 
 A **tagged u16,** denoted `t16`, is a u16 value with the following structure:
 
@@ -84,7 +84,7 @@ overloaded to specify an inline numeric value). This means that the maximum size
 
 Negative offsets are not supported.
 
-## Link
+### Link
 
 A link is a 36-byte structure:
 
@@ -99,35 +99,34 @@ content. For a stand-alone link, this is identical to the length of the content.
 In a `LINKS` block, this is the length of content from the start of the `LINKS`
 block up to and including this link.
 
-`limit == 0` indicates that this link points not to an array, but to a single
-element, or leaf block.
+`limit == 0` is a reserved value and MUST be rejected.
 
-# Blocks
+## Blocks
 
 Data in the format is organized in individual **blocks**. Each block may
 contain a struct or an array.
 
-## Alignment
+### Alignment
 
-The wire format is designed to work in zero-copy mode (on major CPU platforms
-with little-endian byte order), that is, readers can directly interpret memory
-content as the appropriate value.
+The wire format is designed to work in zero-copy mode (on little-endian
+platforms), that is, readers can directly interpret memory content as the
+appropriate value.
 
 To make this possible, writers MUST ensure that all data in the block is
 properly aligned, that is:
 
-**Every primitive value MUST be stored at an offset that is a multiple of the
-value size**, relative to start of the block.
+**Every value in a block MUST be stored at an offset that is a multiple of its
+alignment requirement**, relative to start of the block.
 
-**Every sub-block MUST be aligned to the maximum alignment of any values
-contained inside it,** so that the alignment relative to block start is also
-correct for any values and sub-sub-blocks inside it.
+Notably, sub-blocks within a block MUST be aligned to their alignment
+requirement, which is **the maximum alignment of any values contained** inside
+it. This includes the `t16` header, so the minimum alignment of a block is 2.
 
 The writer is free to insert padding bytes to ensure the alignment.
 
 Only power-of-two alignments are supported.
 
-A zero-copy reader may then place the block in memory so that the alignment
+A zero-copy reader can then place the block in memory so that the alignment
 holds for the target platform — that is, block start must be aligned to platform
 `max_align_t` (typically 8 or 16 bytes).
 
@@ -136,21 +135,7 @@ primitive value will be read out correctly; more specifically, it MUST NOT
 attempt to load values from unaligned addresses if there is a risk of reading
 out invalid value.
 
-## Bounds checking
-
-When accessing data within a block, readers MUST check bounds: any sort of read
-MUST NOT exceed the limits of the containing block. In particular:
-
-* intra-block offsets MUST NOT point beyond the end of the block
-* where applicable, offsets MUST point inside the heap
-  - in particular, offset 0 that points to the block itself is not allowed
-* when reading a sub-block, the block MUST fit inside the parent block
-
-Readers MUST reject blocks that violate these bounds.
-
-Sub-blocks within a block MAY overlap _each other_ arbitrarily.
-
-## Block header
+### Block header
 
 Every block is prefixed by a tagged u16 header specifying the block type and
 size:
@@ -162,24 +147,34 @@ size:
 The `size` includes the 2-byte block header itself. I.e., the maximum size of a
 block with header is 8191 bytes.
 
-(Implicitly, the minimum valid size of a block is 2.)
+The minimum valid size of a block is 2, smaller sizes MUST be rejected.
 
-## Offsets
+### Offsets and bounds
 
 All relative offsets (in structs, slotted arrays, etc.), are always relative to
 **the start of the block**.
 
-## Types of blocks
+Zero offsets are invalid and MUST be rejected. (Such offset would point to the
+block itself, creating a cycle.)
 
-### `0b00 STRUCT`
+Within a given blocks, the maximum allowed offset is equal to the block size.
 
-A struct prefixed by a vtable size + vtable entries
+When performing a read in a context of a particular block, the read MUST NOT
+exceed the bounds of the block.
 
-`[t16 block_header] [t16 vtable_count] [u16 vtable_entry 0, 1, 2,...] [heap]`
+### Types of blocks
 
-See Structs below.
+#### `0b00 TABLE`
 
-### `0b01 DATA`
+A table of heterogeneous elements.
+
+`[t16 block_header] [t16 entries_count] [t16 entry_offset 0, 1, 2,...] [heap]`
+
+A minimum valid size of a `TABLE` block is 4, to fit the `entries_count` field.
+
+See [Tables](#tables) below.
+
+#### `0b01 DATA`
 
 Non-delimited array spanning the `size` of the block
 
@@ -204,69 +199,63 @@ Readers MUST reject blocks whose size is not a multiple of
 `padded_element_size`. (This is to simplify reader implementation, at the cost
 of wasted padding bytes at the end of the block.)
 
-### `0b10 SLOTS`
+#### `0b10 SLOTS`
 
 Slotted array.
 
-`[t16 block_header] [t16 slot_header] [u16 offset 0, 1, 2, ...] [heap]`
+`[t16 block_header] [u16 offset 0, 1, 2, ...] [heap]`
 
-Tagged u16 `slot_header` has the following structure:
+`SLOTS` blocks represent arrays of variable-size byte strings (whose alignment
+is 1). Each `offset[n]` points to the start of an entry `n`, which ends at
+`offset[n+1]`.
 
-- `raw_entries` 1 bit
-- `reserved` 2 bits
-- `count` 13 bits
+Offsets MUST be non-decreasing. The first offset points to the start of the
+heap. Immediately before that is the sentinel offset, which MUST be equal to the
+block size. Given the existence of the sentinel, readers can safely access any
+item as `offset[n] .. offset[n+1]` (`n` inclusive, `n+1` exclusive).
 
-When `raw_entries` bit is set, individual entries are raw data, e.g., strings,
-with an alignment of 1. The following properties apply:
+A `SLOTS` block MUST have at least the sentinel offset; the minimum allowed size
+of a `SLOTS` block is 4. Such minimum block MUST have `4` as its only
+offset, and represents an empty array.
 
-- Offsets in the array MUST be non-decreasing.
-- A sentinel offset MUST be placed at the end of the offset array / start of
-  the heap. This sentinel is not counted in `count`. Its value MUST be equal
-  to block `size`.
-    - Readers MUST check the presence of this sentinel and reject the block
-      if it is not there.
-    - Given the sentinel, you can safely read out any item as `offset[n] ..
-      offset[n+1]` (`n` inclusive, `n+1` exclusive).
-- The first offset MUST be equal to `sizeof(block_header) +
-  sizeof(slot_header) + count * sizeof(offset) + sizeof(sentinel)`
+Upon receiving a `SLOTS` block, the reader MUST perform these validation steps:
 
-When `raw_entries` bit is unset, individual entries are sub-blocks. Slot offsets
-MAY be listed in arbitrary order -- in particular, it is allowed to list the
-same offset multiple times to place the same sub-block multiple times in the
-array.
+1. check that the block size is at least 4
+2. check that the value of offset 0 is:
+   a. at least 4
+   b. divisible by 2 (it must point to the start of the data after a 2-aligned offset array)
+   c. no larger than the block size
+3. calculate `offset_count = (offset[0] - 2) / 2` (subtracting the size of the
+   block header). This is the number of offsets in the array.
+4. check that all offsets are non-decreasing
+5. check that `offset[offset_count - 1]` (sentinel offset) is equal to the block size
 
-### `0b11 LINKS`
+After the validation passes, it is safe to:
+
+* directly access `offset[0]` in order to calculate `offset_count`
+* calculate `element_count = offset_count - 1`
+* access any element `n` as `offset[n] .. offset[n+1]` (`n` inclusive, `n+1` exclusive).
+
+#### `0b11 LINKS`
 
 An array of links / an inner node of a link tree.
 
-`[t16 block_header] [u16 parameters] [link 0, 1, 2 ...]`
+`[t16 block_header] [u16 reserved] [link 0, 1, 2 ...]`
 
-The block header is followed by a two-byte parameters field which aligns the
-rest of the block to 4. After it follows a non-delimited array of 36-byte links
-(see Links above).
+The block header is followed by a two-byte reserved field which aligns the rest
+of the block to 4. After it follows a non-delimited array of 36-byte links (see
+Links above).
 
-`parameters` have the following structure:
+The `reserved` field is all zero, other values are reserved for future use.
 
-- `leaf_parent` 1 bit
-- `reserved` 15 bits
+In a `LINKS` block, the meaning of the link’s `limit` field is a cumulative
+count of content up to and including the current link. This is to facilitate
+efficient binary search: an item with index `N` will be found under the link
+whose `limit` is the smallest such that `limit > N` (`limit` is exclusive so for
+`limit == N`, the item `N` will be under the next link).
 
-If `leaf_parent` bit is set, the block is a parent-of-leaves node in a `LINKS`
-tree. All the links MUST have `limit == 0`, and link directly to leaf blocks.
-
-If `leaf_parent` bit is unset, the block is an inner node, and all links MUST
-have non-zero `limit`.
-
-In an inner node, the meaning of the link’s `limit` field is a cumulative count
-of content up to and including the current link. This is to facilitate efficient
-binary search: an item with index `N` will be found under the link whose `limit`
-is the smallest such that `limit > N` (`limit` is exclusive so for `limit == N`,
-the item `N` will be under the next link).
-
-Readers MUST reject the block if
-
-* `leaf_parent` bit is set and some link has `limit != 0`
-* `leaf_parent` bit is unset and the `limit` values are not strictly increasing,
-  or if any `limit` is zero.
+Readers MUST reject the block if the `limit` values are not strictly increasing,
+or if any `limit` is zero.
 
 Example: For an inner block of 321 items divided into max 100-item sub-blocks,
 this would be the structure:
@@ -278,28 +267,28 @@ this would be the structure:
 - `[hash 2] [300]` — items 200 to 299
 - `[hash 3] [321]` — items 300 to 321
 
-# Structs
+## Tables
 
-A struct block consists of the block header, a vtable, and a data heap.
+A table block consists of the block header, a list of entries, and a data heap.
 
-The vtable is an array of tagged offsets pointing into the data heap.
+The list of entries is an array of tagged offsets pointing into the data heap.
 
 ```
 [t16 block_header]
-[t16 vtable_header]
-[vtable_entry 0]
-[vtable_entry 1]
+[t16 entries_count]
+[entry 0]
+[entry 1]
 ...
-[vtable_entry [count-1]]
+[entry [count-1]]
 [heap]
 ```
 
-`vtable_header` is a tagged u16 with the following structure:
+`entries_count` is a tagged u16 with the following structure:
 
-- `flags` 3 bits. Reserved for future use.
-- `count` 13 bits: count of vtable entries.
+- `flags` 3 bits. All zero, other values are reserved for future use.
+- `count` 13 bits: count of table entries.
 
-`vtable_entry` is a tagged u16 with the following structure:
+`entry` is a tagged u16 with the following structure:
 
 - `type` 3 bits
 - `offset` 13 bits
@@ -307,12 +296,9 @@ The vtable is an array of tagged offsets pointing into the data heap.
 The `offset` is the same size as `size` of a block, which is enough to point to
 any location within the block.
 
-A struct cannot span multiple blocks, which puts a limit on its size: the vtable plus
-all data on the heap must fit inside a single block.
+### Entry types
 
-## Struct types
-
-The following values are recognized for type tags in the vtable:
+The following values are recognized for type tags of a table entry:
 
 - `0b000 NULL` - skipped. SHOULD be all zero but impls MAY ignore nonzero values.
 - `0b100 INLINE` - `offset` is interpreted as an integer value of the field.
@@ -324,19 +310,20 @@ The following values are recognized for type tags in the vtable:
 
 Values `0b001` `0b010` and `0b011` are reserved for future use.
 
-# Arbitrary size arrays
+Offsets for `DIRECT`, `BLOCK`, and `LINK`, MUST point into the heap, that is,
+_after_ the end of the entries list, and _before_ the end of the block.
 
-Unlike structs, which are limited to a single 8 KiB block, the format can
-represent arrays of up to 2^32 elements.
+## Arbitrary size arrays
 
-## Link trees
+The format can represent arrays of up to 2^32 elements.
+
+### Link trees
 
 The **root** of a link tree is a `LINKS` block, that is, at most block-sized
 array of links. Each link points to:
 
 1. inner node: a `LINKS` block that is the root of a sub-tree
-2. leaf node: a `DATA`, `SLOTS`, or a leaf-parent `LINKS` block that carries
-   individual elements of the array.
+2. leaf node: a block that carries individual elements of the array.
 
 Writers SHOULD balance the tree, but the format permits unbalanced trees. In
 particular, inner nodes and leaf nodes are allowed to be intermixed at the same
@@ -346,18 +333,19 @@ level.
 block; it is not allowed to place a `limit == 0` leaf link into a node whose
 other children are inner nodes.)
 
-There are three kinds of link trees, matching the three kinds of array blocks:
+There are four kinds of link trees:
 
 * `DATA` tree represents a single contiguous non-delimited array of fixed-size
   elements. Its leaf nodes are `DATA` blocks.
 * `SLOTS` tree represents a slotted array of variable-size elements. Its leaf
   nodes are `SLOTS` blocks.
-* `LINKS` tree represents an array of links to blocks. Its leaf nodes are
-  leaf-parent `LINKS` blocks, whose links point to individual leaf blocks.
+* `TABLE` tree represents an array of heterogeneous elements, most typically
+  used for sub-blocks. Its leaf nodes are `TABLE` blocks.
 
-A link tree MUST be homogenous, that is, all leaves MUST be of the same type.
+A link tree MUST be homogenous, that is, all leaf nodes MUST be of the same
+type.
 
-### Traversal
+#### Traversal
 
 To access an element at global index `N` in a link tree, one must typically
 descend down into inner nodes in order to locate the leaf containing that element.
@@ -376,17 +364,14 @@ When descending into a link, implementations MUST:
 
 Content length of:
  - `DATA` leaf: schema-defined length of its array
- - `SLOTS` leaf: count of its slots
+ - `SLOTS` leaf: count of its elements, that is, `offset_count - 1`
+ - `TABLE` leaf: count of its entries
  - `LINKS` inner node: maximum `limit` of its links, that is, the `limit` of the
    last link
 
-## Linking to arbitrary size arrays
+### Linking to arbitrary size arrays
 
-Every struct field contains one of the following:
-
-- a primitive value,
-- an array,
-- or another struct.
+Every table field contains either a _primitive value_, or an _array_.
 
 Primitive values are never linked, because the size of the link is larger than
 the value itself.
@@ -394,26 +379,44 @@ the value itself.
 When linking to an array, the link's `limit` field is the count of elements in
 the array. Links to arrays with `limit == 0` are not allowed and readers MUST
 reject such data. (Zero-length arrays can be stored as a `BLOCK` containing an
-empty `DATA` or `SLOTS` block.)
+empty `DATA`, `SLOTS`, or `TABLE` block.)
 
 In all cases, the link may either point to a block that is a leaf node (that is,
-a `DATA`, `SLOTS`, or a leaf-parent `LINKS` block), or to a root of a link tree.
-
-When linking to a struct, the link has `limit` set to zero, and links directly
-to the `STRUCT` block.
+a `DATA`, `SLOTS`, or `TABLE` block), or to a root of a link tree.
 
 A link's `limit` MUST always match the element count of the linked array.
 
-# Data model
+## Data model
 
-Every data structure stored in this format must be rooted in a single *block*.
-Most typically, this will be a `STRUCT` block.
+### Structs
 
-The following data types can be natively stored in the wire format.
+Every data structure stored in this format must be rooted in a single block.
+Most typically, this will be a `TABLE` block representing a struct.
 
-## Fixed-size types
+`TABLE` allows for representing heterogeneous elements. The schema MUST specify
+an _index_ for each member of the struct, which will be its position in the table.
 
-### Integer-like types
+Indices have to be unique but do not have to be consecutive. Any gaps in the
+indices will be filled with `NULL` entries.
+
+Implementations MUST allow `TABLE`s that are longer than the expected number of
+struct members, to allow future extensions. Implementations MUST also allow
+`TABLE`s that are shorter; in that case, all missing members are assumed to be
+`NULL`.
+
+Encoding-wise, every field is optional and can be `NULL`. Schema MAY impose a
+"required" constraint on some members; if such members are missing or `NULL`,
+the block MUST be rejected.
+
+In order to simplify reader implementation, a struct MUST fit into a single
+`TABLE` block, and cannot be split into a link tree.
+
+The following sections describe which other data types are recognized, and how
+to store them in a `TABLE`.
+
+### Fixed-size types
+
+#### Integer-like types
 
 The following types of integers are allowed:
 
@@ -432,15 +435,15 @@ type.
 
 Larger values MUST be stored as `DIRECT`.
 
-### Floats
+#### Floats
 
 The following types of floats are allowed: `f32` `f64`
 
 Floats are stored as `DIRECT`.
 
-### Fixed-size arrays
+#### Fixed-size arrays
 
-#### Arrays of primitives
+##### Arrays of primitives
 
 An array of fixed-size elements can be stored as `DIRECT`, if it fits inside the
 block (see [Fitting](#fitting)).
@@ -452,7 +455,7 @@ Arrays that do not fit inside a block are stored as `LINK` to an arbitrary size
 
 An array has an alignment equal to its element's alignment.
 
-#### Arrays of non-primitive fixed-size types
+##### Arrays of non-primitive fixed-size types
 
 Implementations MAY define fixed-size types that are not primitives (such as
 tuples or packed structs). Such types MUST specify their alignment requirements.
@@ -465,24 +468,24 @@ The alignment of such arrays is equal to the alignment of their element.
 
 If a single element is larger than half of a block (4 KiB) (i.e., one block can
 fit just one element), writers SHOULD represent this array as a variable-size
-array of links. If elements are larger than a block (8 KiB), writers MUST use
+`TABLE` array. If elements are larger than a block (8 KiB), writers MUST use
 that representation. (See [Arrays](#arrays).)
 
 Otherwise, rules for fixed-size arrays of primitives apply.
 
-## String types
+### String types
 
-### Text strings
+#### Text strings
 
 Text strings are stored as UTF-8 byte strings, that is, arrays of `u8` (see
 below). Strings are **not** null-terminated, any null bytes are considered part
 of the string.
 
-### Byte strings
+#### Byte strings
 
 Variable-size byte strings are stored as arrays of `u8` (see below).
 
-## Arrays
+### Arrays
 
 Fixed-size arrays of primitives or small fixed-size elements are considered a
 fixed-size type, and described under [Fixed-size arrays](#fixed-size-arrays).
@@ -492,73 +495,64 @@ prescribes a fixed size to an array of variable-size elements, the wire format
 is still a variable-size array, but the reader MUST check that the actual size
 matches the schema.
 
-Arrays are homogenous: their elements are all of the same type and represented
-the same way. In particular, because element representation is determined by
-element size, writers need to choose a common representation that works for
-every value in the array.
+Arrays are homogenous: their elements are all of the same type. In particular,
+because element representation is determined by element size, writers need to
+choose a common representation that works for every value in the array.
 
-There are three possible element representations:
+There are three possible representations of an array:
 
-### 1. Fixed-size elements
+#### 1. Flat data
 
-If the elements are all of the same fixed size, the array will be represented as
-an arbitrary size `DATA` array.
+If the elements are all of the same fixed size and smaller than half of a block
+(4 KiB), the array will be represented as an arbitrary size `DATA` array, which
+the reader can map into its elements in memory directly.
 
-### 2. Slots of a slotted array
+#### 2. Slotted array
 
-If every element can fit into a `SLOTS` block, the whole array can be
-represented an arbitrary size `SLOTS` array. This representation is especially
-appropriate when:
+Arrays of variable-size byte strings, where every element can by itself fit in a
+`SLOTS` block, can be represented as an arbitrary size `SLOTS` array.
+
+This representation is especially appropriate when:
 
 - *most* elements are roughly link-sized (36 bytes) or shorter, or
-- the entire array fits in a single `SLOTS` block, or
-- the reader is expected to read every element, as opposed to direct indexing to
-  points of interest.
+- the entire array fits in a single `SLOTS` block.
 
-### 3. Links
+#### 3. Table
 
-The array becomes an arbitrary size array of links to its elements. Most
-appropriate when:
-
-- any single element does not fit into a `SLOTS` block, e.g., when it is a large
-  byte string,
-- *most* elements are significantly larger than a link.
+For complex element types (structs, arrays, arbitrary size byte strings), the
+array can be represented as an arbitrary size `TABLE` of its elements.
 
 If the whole array fits into a single sub-block of a containing block, it can be
-stored as a `BLOCK` of the appropriate type (`DATA`, `SLOTS`, or `LINKS`),
-depending on fitting constraints.
+stored as a `BLOCK`.
 
 If the whole array fits into a single block, it should be stored as a `LINK` to
-that block.
+that block. Otherwise, the array must be stored as a link tree.
 
-Otherwise, the array must be stored as a link-tree.
+### Link trees
 
-## Structs
+The root of a link tree is a `LINKS` block. This block can either be stored as a
+`BLOCK`, if it fits in the containing table. Otherwise, it is stored as a `LINK`.
 
-Struct members of a struct are encoded as a `STRUCT` block -- either, if the
-block fits, as a `BLOCK` on the heap, or as a `LINK` with `limit == 0` pointing
-to the struct block.
+### Future extensions
 
-## Future extensions
-
-### Dictionaries
+#### Dictionaries
 
 One option for storing dictionaries is to use two struct members: a `keys` array
 and a `values` array. They need to be the same size, but they may be of
 different types and stored differently.
 
-### Tagged unions
+#### Tagged unions
 
 A tagged union type is just a struct whose all members are optional. The writer
 is responsible for encoding exactly one member, and the reader needs to check
 that this is the case.
 
-# Fitting
+## Fitting
 
 When serializing a data structure, the writer must map the logical structure to
-physical blocks. Because the maximum block size is ~8 KiB, large structures
-must be split across multiple blocks joined by links. The process of deciding
-what fits in the current block and what gets externalized is called _fitting_.
+physical blocks. Because the maximum block size is 8 KiB, large structures must
+be split across multiple blocks joined by links. The process of deciding what
+fits in the current block and what gets externalized is called _fitting_.
 
 Fitting proceeds bottom-up: a field's encoded size is only known after it has
 been serialized, so writers MUST serialize children (sub-structs, arrays) before
@@ -568,10 +562,10 @@ The _encoded size_ of a field is the total number of bytes it occupies in a
 block: for a primitive, its byte width; for a sub-block (sub-struct or inline
 array), the block size including its 2-byte block header; for a link, 36 bytes.
 
-## Struct Member Fitting
+### Struct Member Fitting
 
-When building a `STRUCT` block, the writer must determine which members are
-stored inline, which are placed on the struct's heap (`DIRECT` or `BLOCK`), and
+When building a `TABLE` block, the writer must determine which members are
+stored inline, which are placed on the block's heap (`DIRECT` or `BLOCK`), and
 which are externalized as `LINK`s to other blocks.
 
 The following rules apply:
@@ -588,69 +582,61 @@ The following rules apply:
 3. **Filling the remaining space:** For fields too large to be considered
    "small values" but not required to be linked, the writer must decide how to
    utilize the remaining space in the block.
-   - Determining the globally optimal packing is a variation of the knapsack
-     problem.
-   - A recommended heuristic is **"smallest first"**: evaluate the size of all
-     remaining fields, and add them to the heap in increasing order of size
-     until the block is full. Any fields that do not fit MUST be externalized
-     as `LINK`s to newly allocated blocks.
-   - **Rationale:** Every externalized field adds at least 38 bytes of global
-     overhead (a 36-byte link on the parent's heap, plus a 2-byte block header
-     in the child block, plus padding), and requires an additional storage
-     access for the reader. Greedily placing the smallest fields first
-     maximizes the number of fields kept inline, minimizing both the global
-     storage footprint and the total number of linked blocks.
-   - *Note:* This heuristic does not account for alignment padding — a set
-     of small fields may require more padding than fewer larger fields. Writers
-     that need tighter packing MAY use alignment-aware size estimates or solve
-     the knapsack with a dynamic programming approach, which is tractable given
-     typical field counts and the small block capacity.
+
+   Determining the globally optimal packing is a variation of the knapsack
+   problem. A recommended heuristic is **"smallest first"**: evaluate the size
+   of all remaining fields, and add them to the heap in increasing order of size
+   until the block is full. Any fields that do not fit will be externalized as
+   `LINK`s to newly allocated blocks.
+
+   This algorithm maximizes the _number_ of inline fields, minimizing the total
+   number of blocks.
+
+   *Note:* This heuristic does not account for alignment padding — a set of
+   small fields may require more padding than fewer larger fields. Writers
+   that need tighter packing MAY use alignment-aware size estimates, or solve
+   the knapsack with a dynamic programming approach, which is tractable given
+   typical field counts and the small block capacity.
 
 4. **Alignment packing:** When placing `DIRECT` or `BLOCK` fields on the heap,
    writers SHOULD order them to minimize padding bytes, using the following
    algorithm:
    - Separate all heap-bound fields into groups based on their required
-     alignment: 8, 4, 2, and 1.
+     alignment.
    - Keep track of the `current_offset` on the heap (which starts at `4 + 2 *
-     vtable_count`).
+     entry_count`).
    - Loop while there are unallocated fields:
      - Determine the available alignment at `current_offset`. For instance, if
        `current_offset` is a multiple of 8, the available alignment is 8. If
        `current_offset` is 12 (a multiple of 4 but not 8), the available
-       alignment is 4. (Available alignment is capped at 8.)
+       alignment is 4.
      - Among the remaining fields, prefer the one with the highest alignment
-       requirement that fits the available alignment. As a secondary
-       tie-breaker within the same alignment class, prefer fields whose size
-       is a multiple of their alignment ("alignment-preserving" fields), since
-       they do not degrade the offset alignment for subsequent placements.
+       requirement that fits the available alignment. Within the same alignment
+       class, prefer fields whose size is a multiple of their alignment
+       ("alignment-preserving" fields), since they do not degrade the offset
+       alignment for subsequent placements.
      - If a suitable field is found, place it at `current_offset` and advance
        by the field's size.
      - If no remaining field fits without violating its alignment, add 1 byte
        of padding and try again.
 
-   *Note: This algorithm handles sub-blocks whose sizes are not multiples of
-   their alignment. The irregular trailing offsets naturally get filled with
-   smaller, less strictly aligned fields, avoiding large padding gaps.*
-
-   Because alignment interactions are order-dependent, no simple greedy rule
-   is optimal in all cases. Writers MAY try all permutations of heap-bound
-   fields (feasible for typical field counts) to find the minimum-padding
-   arrangement.
-
 Because alignment padding (step 4) affects total heap consumption, writers
-SHOULD account for padding when evaluating whether fields fit in step 3. A
-practical approach is to interleave the two: run the alignment packing algorithm
-on the candidate set of fields, and if the result exceeds the block size, drop
-the largest non-mandatory field and retry.
+SHOULD account for padding when evaluating whether fields fit in step 3. No
+simple greedy rule is optimal in all cases, however. Space-conscious writers
+can, e.g., try all permutations of heap-bound fields (feasible for typical field counts) to find the best fit.
 
-## Array Representation
+A practical approach is to interleave steps 3 and 4: run the alignment packing
+algorithm on the candidate set of fields, and if the result exceeds the block
+size, drop the largest non-mandatory field and retry.
+
+### Array Representation
 
 As described in [Arrays](#arrays), array elements can be represented as
-fixed-size `DATA`, variable-size `SLOTS`, or individually linked via `LINKS`.
-The following algorithms recommend a specific choice and describe how to build
-each representation.
+fixed-size `DATA`, variable-size `SLOTS`, or individually determined via
+`TABLE`. The following algorithms recommend a specific choice and describe how
+to build each representation.
 
-### 1. Fixed-Size Primitives (`DATA`)
+#### 1. Fixed-Size Primitives (`DATA`)
 
 If the array elements are fixed-size primitive values (e.g., `u32`, `f64`), the
 array MUST be represented as `DATA`.
@@ -659,56 +645,20 @@ array MUST be represented as `DATA`.
   block-sized `DATA` blocks and build a `LINKS` tree whose leaves point to
   those `DATA` blocks.
 
-### 2. Variable-Sized or Sub-Struct Elements (`SLOTS` vs `LINKS`)
+#### 2. Complex elements (`TABLE`)
 
-If the array elements are variable-sized (e.g., strings) or sub-structs, the
-writer must choose between a `SLOTS` tree and a `LINKS` tree.
-- Use a **`LINKS` tree** if:
-  - The schema requires elements to be independently content-addressable or
-    heavily deduplicated.
-  - The average serialized element size is large (roughly > 1024 bytes as a
-    guideline), making the 36-byte link overhead per element negligible.
-- Use a **`SLOTS` tree** if:
-  - The array consists of many small elements (e.g., short strings or small
-    inline structs), where `SLOTS` saves ~36 bytes of link overhead per
-    element.
-  - The typical access pattern involves sequential iteration rather than random
-    indexing.
+If the array elements are structs or arrays, the array MUST be represented as a
+`TABLE` of blocks, placed either as `BLOCK` or `LINK` depending on fitting.
 
-Since element sizes are known at this point (fitting is bottom-up), writers MAY
-compute the actual storage cost of both representations and choose the cheaper
-one, rather than relying on the approximate threshold above.
+TODO table fitting
 
-#### Building a `SLOTS` Tree
+#### 3. Byte strings (`SLOTS` vs `TABLE`)
 
-This algorithm assumes every element fits in a single `SLOTS` block (see
-[Slots of a slotted array](#2-slots-of-a-slotted-array)).
+If the array elements are variable-sized (e.g., strings) or s
 
-1. Initialize an empty `SLOTS` block buffer.
-2. Iterate through the elements:
-   - Serialize the element.
-   - If adding the element (plus its offset) to the current buffer would exceed
-     the block size limit, finalize the current buffer into a `SLOTS` block and
-     start a new one.
-   - Append the element to the current buffer.
-3. Finalize the last buffer. If multiple `SLOTS` blocks were created, build a
-   `LINKS` tree connecting them as leaf nodes.
+TODO
 
-#### Building a `LINKS` Tree
-A `LINKS` tree has two distinct node types: leaf-parents and inner nodes. The
-tree is built bottom-up:
-1. Serialize each element into its own block (or tree of blocks if the element
-   is very large). Collect the resulting `LINK`s.
-2. Group the element links into leaf-parent `LINKS` blocks (up to ~227 links
-   per block). These MUST have the `leaf_parent` bit set, and all link `limit`
-   fields MUST be `0`.
-3. If all elements fit into a single leaf-parent block, it is the root.
-4. Otherwise, collect the links to leaf-parent blocks and group them into inner
-   `LINKS` blocks. These MUST have `leaf_parent` unset, and each link's `limit`
-   MUST be the cumulative element count up to and including that link.
-5. Repeat recursively until a single root `LINKS` node remains.
-
-# Note on deep nesting
+## Note on deep nesting
 
 The format intentionally does not specify a maximum nesting depth.
 Implementations need to take care not to blindly recurse into the structure,
@@ -723,7 +673,7 @@ same place by re-starting from the root.
 It is up to the reader to not implement schemas that are inherently too deep for
 said reader to safely traverse.
 
-# Hashing
+## Hashing
 
 Links are defined as `HMAC-SHA256(key, message)`, where `message` is the raw
 bytes of the pointed-to block.
@@ -766,20 +716,25 @@ possible to keep replaying the same collision. An attacker would need to
 generate a new collision for every short-lived session, which we believe to be
 computationally infeasible.
 
-# Format variants
+## Format variants
+
+Hashbuffers format as described in this spec could be denoted as `hashbuffers-13/32`,
+for 13-bit block size and 32-bit large array size.
 
 The following variations seem to make sense:
 
-* Very Large Arrays: by modifying the `link` type to use a 64-bit `limit`, and
-  tweaking the alignment requirements accordingly, it is possible for the
-  modified protocol to support arrays of up to 2^64 elements.
+* Very Large Arrays (`hashbuffers-13/64`): by modifying the `link` type to use a
+  64-bit `limit`, and tweaking the alignment requirements accordingly, it is
+  possible for the modified protocol to support arrays of up to 2^64 elements.
 
-* 29-bit sizes and offsets: by converting `t16` type to `t32` with 3 bits for
-  `parameters` and 29 bits for `number`, it is possible for the modified protocol
-  to support individual blocks of up to 512 MiB in size. Such modification would
-  likely imply Very Large Arrays as well.
+* 29-bit sizes and offsets (`hashbuffers-29/64`): by converting `t16` type to
+  `t32` with 3 bits for `parameters` and 29 bits for `number`, it is possible
+  for the modified protocol to support individual blocks of up to 512 MiB in
+  size. With blocks this large, it makes little sense to keep the link limits
+  small -- typically you would go with 64-bit large arrays too.
 
-* Big-endian byte order, if required by the platforms in question.
+* Big-endian byte order (`hashbuffers-*-be`), if required by the platforms in
+  question.
 
 Note that the format intentionally does not explicitly carry any of those
 parameters. The proposed variants are different instances of the format and
