@@ -17,8 +17,9 @@ maximum size of any single array is 2^32 elements; in particular, the maximum
 size of a single byte array is 4 GiB.
 
 Understanding the encoded data structure requires schema separate from the data.
-A schema-less reader can only understand the structure enough to reliably follow
-links and fetch all the data.
+Schema definition is outside the scope of this document. A schema-less reader
+can only understand the structure enough to reliably follow links and fetch all
+the data.
 
 The format is designed for zero-copy reading on little-endian platforms.
 
@@ -168,11 +169,65 @@ exceed the bounds of the block.
 
 A table of heterogeneous elements.
 
-`[t16 block_header] [t16 entries_count] [t16 entry_offset 0, 1, 2,...] [heap]`
+`[t16 block_header] [t16 entry_count] [t16 entry_offset 0, 1, 2,...] [heap]`
 
-A minimum valid size of a `TABLE` block is 4, to fit the `entries_count` field.
+A minimum valid size of a `TABLE` block is 4, to fit the `entry_count` field.
 
-See [Tables](#tables) below.
+`entry_count` is a tagged u16 with the following structure:
+
+- `flags` 3 bits. All zero, other values are reserved for future use.
+- `count` 13 bits: count of table entries.
+
+`entry` is a tagged u16 with the following structure:
+
+- `type` 3 bits
+- `offset` 13 bits
+
+The `offset` is the same size as `size` of a block, which is enough to point to
+any location within the block.
+
+##### Entry types
+
+The following values are recognized for type tags of a table entry:
+
+- `0b000 NULL` - skipped. SHOULD be all zero but impls MAY ignore nonzero values.
+- `0b100 INLINE` - `offset` is interpreted as an integer value of the field.
+- `0b101 DIRECT` - `offset` points to a raw value of schema-defined size on the
+  heap (int or float of more than 13 bits, or a fixed-size array of fixed-size
+  elements). The value has no header or wrapper. `offset` MUST be properly
+  aligned to the value’s requirements.
+- `0b110 BLOCK` - `offset` points to a sub-block on the heap. The sub-block has
+  its own block header and is interpreted as a complete block. `offset` MUST be
+  aligned to the sub-block’s alignment requirement.
+- `0b111 LINK` - `offset` points to a raw link on the heap. The link has no
+  header or wrapper. `offset` MUST be aligned to link alignment.
+
+Values `0b001` `0b010` and `0b011` are reserved for future use.
+
+Offsets for `DIRECT`, `BLOCK`, and `LINK`, MUST point into the heap, that is,
+_after_ the end of the entries list, and _before_ the end of the block.
+
+##### Validation
+
+Upon receiving a `TABLE` block, the reader MUST perform these validation steps:
+
+1. Check that the block size is at least 4.
+2. Check that `flags` of `entry_count` are all zero.
+3. Calculate `heap_start = 4 + 2 * entry_count`, and check that `heap_start` is
+   no greater than block size.
+4. Walk all entries. Check that:
+   * No entry specifies one of the reserved types (`0b001` `0b010` `0b011`).
+   * For `DIRECT`, `BLOCK`, and `LINK`, that `heap_start <= offset < size`.
+   * For `DIRECT`, if schema is available, `offset <= size - entry_size` and
+     `offset % entry_align == 0`.
+   * For `LINK`, check that `offset <= size - LINK_SIZE` (36 bytes). Then
+     examine the link and check that its `limit != 0`.
+   * For `BLOCK`:
+     1. Check that `offset <= size - 2`.
+     2. Read `block_size` from the header at `offset`. Check that `offset + block_size <= size`.
+     3. Validate the block at `offset` as a complete block.
+
+A block that fails any of these checks MUST be rejected.
 
 #### `0b01 DATA`
 
@@ -187,6 +242,10 @@ size_ and _alignment_ defined by the schema. Writers MUST add padding:
   element, and
 * after each element, if its size is not a multiple of its alignment.
 
+This specifically means that padding after the last element (if any) is always
+included, in order to simplify reader implementation at the cost of wasted
+trailing padding bytes.
+
 To achieve that, the following values are defined:
 
 - array data starts at offset `start_offset = max(align, 2)`, to account for the
@@ -195,9 +254,22 @@ To achieve that, the following values are defined:
   its alignment
 - element count is `count = (size - start_offset) / padded_element_size`
 
-Readers MUST reject blocks whose size is not a multiple of
-`padded_element_size`. (This is to simplify reader implementation, at the cost
-of wasted padding bytes at the end of the block.)
+An empty array is represented by a block where `count` is 0, that is, block size
+is equal to `start_offset`. For alignment of 2 or less, this is just the `DATA`
+header; for larger alignments, padding up to `start_offset` MUST be included.
+
+Upon receiving a `DATA` block, a schema-aware reader MUST perform these
+validation steps:
+
+1. Check that the block size is at least `start_offset`.
+2. Check that the data size (`size - start_offset`) is a multiple of
+   `padded_element_size`.
+
+A schema-less reader doesn't know size and alignment of elements, so it can only
+check that `size >= 2`.
+
+A block that fails any of these checks MUST be rejected.
+
 
 #### `0b10 SLOTS`
 
@@ -209,10 +281,12 @@ Slotted array.
 is 1). Each `offset[n]` points to the start of an entry `n`, which ends at
 `offset[n+1]`.
 
-Offsets MUST be non-decreasing. The first offset points to the start of the
-heap. Immediately before that is the sentinel offset, which MUST be equal to the
-block size. Given the existence of the sentinel, readers can safely access any
-item as `offset[n] .. offset[n+1]` (`n` inclusive, `n+1` exclusive).
+Offsets MUST be non-decreasing. The first offset (`offset[0]`) points to the
+start of the heap, which is also the start of the first element. The last offset
+is the **sentinel**, which MUST be equal to the block size. (The sentinel is the
+last entry in the offset array, immediately preceding the heap in memory.) Given
+the sentinel, readers can safely access any item `n` as
+`offset[n] .. offset[n+1]` (inclusive start, exclusive end).
 
 A `SLOTS` block MUST have at least the sentinel offset; the minimum allowed size
 of a `SLOTS` block is 4. Such minimum block MUST have `4` as its only
@@ -254,64 +328,25 @@ efficient binary search: an item with index `N` will be found under the link
 whose `limit` is the smallest such that `limit > N` (`limit` is exclusive so for
 `limit == N`, the item `N` will be under the next link).
 
-Readers MUST reject the block if the `limit` values are not strictly increasing,
-or if any `limit` is zero.
-
 Example: For an inner block of 321 items divided into max 100-item sub-blocks,
 this would be the structure:
 
 - `[t16 block_header]`
-- `[u16 parameters]` — 0b0... indicating inner node
+- `[u16 reserved]`
 - `[hash 0] [100]` — items 0 to 99
 - `[hash 1] [200]` — items 100 to 199
 - `[hash 2] [300]` — items 200 to 299
-- `[hash 3] [321]` — items 300 to 321
+- `[hash 3] [321]` — items 300 to 320
 
-## Tables
+Upon receiving a `LINKS` block, the reader MUST check the following invariants:
 
-A table block consists of the block header, a list of entries, and a data heap.
+1. block size is at least 4
+2. value of `reserved` is zero
+3. `size - 4` is a multiple of link size (36 bytes)
+4. `limit` values are strictly increasing
+5. no `limit` is zero
 
-The list of entries is an array of tagged offsets pointing into the data heap.
-
-```
-[t16 block_header]
-[t16 entries_count]
-[entry 0]
-[entry 1]
-...
-[entry [count-1]]
-[heap]
-```
-
-`entries_count` is a tagged u16 with the following structure:
-
-- `flags` 3 bits. All zero, other values are reserved for future use.
-- `count` 13 bits: count of table entries.
-
-`entry` is a tagged u16 with the following structure:
-
-- `type` 3 bits
-- `offset` 13 bits
-
-The `offset` is the same size as `size` of a block, which is enough to point to
-any location within the block.
-
-### Entry types
-
-The following values are recognized for type tags of a table entry:
-
-- `0b000 NULL` - skipped. SHOULD be all zero but impls MAY ignore nonzero values.
-- `0b100 INLINE` - `offset` is interpreted as an integer value of the field.
-- `0b101 DIRECT` - `offset` points to a single raw value of schema-defined size
-  (int or float of more than 13 bits, or a fixed-size array of fixed-size
-  elements). `offset` MUST be properly aligned to the value’s requirements.
-- `0b110 BLOCK` - a block header is located at the offset
-- `0b111 LINK` - a link is located at the offset
-
-Values `0b001` `0b010` and `0b011` are reserved for future use.
-
-Offsets for `DIRECT`, `BLOCK`, and `LINK`, MUST point into the heap, that is,
-_after_ the end of the entries list, and _before_ the end of the block.
+Blocks that fail any of these invariants MUST be rejected.
 
 ## Arbitrary size arrays
 
@@ -329,11 +364,7 @@ Writers SHOULD balance the tree, but the format permits unbalanced trees. In
 particular, inner nodes and leaf nodes are allowed to be intermixed at the same
 level.
 
-(Note however that a "leaf node" in a `LINKS` tree is a leaf-parent `LINKS`
-block; it is not allowed to place a `limit == 0` leaf link into a node whose
-other children are inner nodes.)
-
-There are four kinds of link trees:
+There are three kinds of link trees:
 
 * `DATA` tree represents a single contiguous non-delimited array of fixed-size
   elements. Its leaf nodes are `DATA` blocks.
@@ -371,15 +402,18 @@ Content length of:
 
 ### Linking to arbitrary size arrays
 
-Every table field contains either a _primitive value_, or an _array_.
+Every table field contains either a _primitive value_, or an _array_. (On the
+encoding level, structs are represented as tables, which are arrays.)
 
 Primitive values are never linked, because the size of the link is larger than
 the value itself.
 
 When linking to an array, the link's `limit` field is the count of elements in
-the array. Links to arrays with `limit == 0` are not allowed and readers MUST
-reject such data. (Zero-length arrays can be stored as a `BLOCK` containing an
-empty `DATA`, `SLOTS`, or `TABLE` block.)
+the array. Because `limit` of 0 is reserved, zero-length arrays cannot be
+linked, and instead MUST be stored as a `BLOCK` containing an empty `DATA`,
+`SLOTS`, or `TABLE` block.
+
+(Schema MAY allow for representing an empty array with a `NULL` entry.)
 
 In all cases, the link may either point to a block that is a leaf node (that is,
 a `DATA`, `SLOTS`, or `TABLE` block), or to a root of a link tree.
@@ -441,37 +475,41 @@ The following types of floats are allowed: `f32` `f64`
 
 Floats are stored as `DIRECT`.
 
-#### Fixed-size arrays
-
-##### Arrays of primitives
-
-An array of fixed-size elements can be stored as `DIRECT`, if it fits inside the
-block (see [Fitting](#fitting)).
-
-Arrays that can fit inside a block SHOULD NOT be stored as `BLOCK`.
-
-Arrays that do not fit inside a block are stored as `LINK` to an arbitrary size
-`DATA` array.
-
-An array has an alignment equal to its element's alignment.
-
-##### Arrays of non-primitive fixed-size types
+#### Custom fixed-size types
 
 Implementations MAY define fixed-size types that are not primitives (such as
 tuples or packed structs). Such types MUST specify their alignment requirements.
+
+If the size is no larger than a link (36 bytes), it MUST be stored as `DIRECT`.
+
+Larger values can be stored as `DIRECT`, if they fit inside the struct, or as a
+`LINK` to an arbitrary size `DATA` array.
+
+#### Fixed-size arrays
+
+This section describes arrays whose element count is explicitly specified in the
+schema. For variable-size arrays, see [Arrays](#arrays).
+
+Such array of fixed-size elements can be stored as `DIRECT`, if it fits inside the
+block (see [Fitting](#fitting)).
+
+The alignment of an array is equal to its element's alignment.
+
+Arrays that can fit inside a block SHOULD NOT be stored as `BLOCK`, to avoid
+unnecessary block overhead.
 
 A fixed-size array of fixed-size elements is itself considered a fixed-size
 type, and may be an element of another array. When other constraints allow,
 such arrays-of-arrays can be stored as flat data.
 
-The alignment of such arrays is equal to the alignment of their element.
+Arrays whose element size is smaller than half of a block (4 KiB) can be stored
+as a `LINK` to arbitrary size flat `DATA`.
 
-If a single element is larger than half of a block (4 KiB) (i.e., one block can
+If the element size is larger than half of a block (4 KiB) (i.e., one block can
 fit just one element), writers SHOULD represent this array as a variable-size
-`TABLE` array. If elements are larger than a block (8 KiB), writers MUST use
-that representation. (See [Arrays](#arrays).)
-
-Otherwise, rules for fixed-size arrays of primitives apply.
+`TABLE` array whose elements are `LINK`s to the individual elements. If elements
+are larger than a block (8 KiB), writers MUST use that representation. (See
+[Arrays](#arrays).)
 
 ### String types
 
@@ -499,6 +537,12 @@ Arrays are homogenous: their elements are all of the same type. In particular,
 because element representation is determined by element size, writers need to
 choose a common representation that works for every value in the array.
 
+If the whole array fits into a single sub-block of a containing block, it can be
+stored as a `BLOCK`.
+
+If the whole array fits into a single block, it should be stored as a `LINK` to
+that block. Otherwise, the array must be stored as a link tree.
+
 There are three possible representations of an array:
 
 #### 1. Flat data
@@ -521,12 +565,6 @@ This representation is especially appropriate when:
 
 For complex element types (structs, arrays, arbitrary size byte strings), the
 array can be represented as an arbitrary size `TABLE` of its elements.
-
-If the whole array fits into a single sub-block of a containing block, it can be
-stored as a `BLOCK`.
-
-If the whole array fits into a single block, it should be stored as a `LINK` to
-that block. Otherwise, the array must be stored as a link tree.
 
 ### Link trees
 
