@@ -104,8 +104,8 @@ block up to and including this link.
 
 ## Blocks
 
-Data in the format is organized in individual **blocks**. Each block may
-contain a struct or an array.
+Data in the format is organized in individual **blocks**, each of which contains
+a certain kind of array.
 
 ### Alignment
 
@@ -158,7 +158,7 @@ All relative offsets (in structs, slotted arrays, etc.), are always relative to
 Zero offsets are invalid and MUST be rejected. (Such offset would point to the
 block itself, creating a cycle.)
 
-Within a given blocks, the maximum allowed offset is equal to the block size.
+Within a given block, the maximum allowed offset is equal to the block size.
 
 When performing a read in a context of a particular block, the read MUST NOT
 exceed the bounds of the block.
@@ -183,9 +183,6 @@ A minimum valid size of a `TABLE` block is 4, to fit the `entry_count` field.
 - `type` 3 bits
 - `offset` 13 bits
 
-The `offset` is the same size as `size` of a block, which is enough to point to
-any location within the block.
-
 ##### Entry types
 
 The following values are recognized for type tags of a table entry:
@@ -207,6 +204,24 @@ Values `0b001` `0b010` and `0b011` are reserved for future use.
 Offsets for `DIRECT`, `BLOCK`, and `LINK`, MUST point into the heap, that is,
 _after_ the end of the entries list, and _before_ the end of the block.
 
+##### Alignment requirements
+
+The alignment of a `TABLE` is equal to the largest alignment of any of its entries.
+
+As a sub-algorithm of [Validation](#validation), the following algorithm can be used to
+determine the alignment of a block:
+
+1. Assume that the block is 2-aligned in its parent.
+2. Run the [Validation](#validation) algorithm for the block header only.
+3. Set `max_align = 2`.
+4. Walk all entries:
+   * if a `LINK` is found, bump `max_align` to `LINK_ALIGN` (4 bytes)
+   * if a `DIRECT` is found, bump `max_align` to schema-defined alignment of that field
+   * if a `BLOCK` is found, check the block's alignment and run this algorithm
+     recursively. Then bump `max_align` to the block's alignment requirement
+
+The resulting maximum value `max_align` is the alignment of the block.
+
 ##### Validation
 
 Upon receiving a `TABLE` block, the reader MUST perform these validation steps:
@@ -215,17 +230,24 @@ Upon receiving a `TABLE` block, the reader MUST perform these validation steps:
 2. Check that `flags` of `entry_count` are all zero.
 3. Calculate `heap_start = 4 + 2 * entry_count`, and check that `heap_start` is
    no greater than block size.
-4. Walk all entries. Check that:
-   * No entry specifies one of the reserved types (`0b001` `0b010` `0b011`).
-   * For `DIRECT`, `BLOCK`, and `LINK`, that `heap_start <= offset < size`.
-   * For `DIRECT`, if schema is available, `offset <= size - entry_size` and
-     `offset % entry_align == 0`.
-   * For `LINK`, check that `offset <= size - LINK_SIZE` (36 bytes). Then
-     examine the link and check that its `limit != 0`.
-   * For `BLOCK`:
-     1. Check that `offset <= size - 2`.
-     2. Read `block_size` from the header at `offset`. Check that `offset + block_size <= size`.
-     3. Validate the block at `offset` as a complete block.
+
+For each entry, the following checks MUST be performed:
+
+1. The entry is not a reserved type (`0b001` `0b010` `0b011`).
+2. For `DIRECT`, `BLOCK`, and `LINK`, check that `heap_start <= offset < size`.
+3. For `DIRECT`, if schema is available:
+  - `offset <= size - entry_size`
+  - `offset % entry_align == 0`
+4. For `LINK`:
+  - `offset <= size - LINK_SIZE` (36 bytes)
+  - `offset % LINK_ALIGN == 0` (4 bytes)
+  - Then examine the link and check that its `limit != 0`.
+5. For `BLOCK`:
+  1. `offset <= size - 2`
+  2. `offset % BLOCK_ALIGN == 0` (2 bytes)
+  3. Read `block_size` from the header at `offset`. Check that `offset + block_size <= size`.
+  4. Determine the block's alignment requirement and check that it is properly aligned.
+  5. Validate the block at `offset` as a complete block.
 
 A block that fails any of these checks MUST be rejected.
 
@@ -270,6 +292,8 @@ check that `size >= 2`.
 
 A block that fails any of these checks MUST be rejected.
 
+The alignment of a `DATA` block is equal to element alignment, but at least 2.
+I.e., it is equal to `start_offset`.
 
 #### `0b10 SLOTS`
 
@@ -308,7 +332,9 @@ After the validation passes, it is safe to:
 
 * directly access `offset[0]` in order to calculate `offset_count`
 * calculate `element_count = offset_count - 1`
-* access any element `n` as `offset[n] .. offset[n+1]` (`n` inclusive, `n+1` exclusive).
+* access any element `n` as `offset[n] .. offset[n+1]`
+
+The alignment of a `SLOTS` block is minimum block alignment, which is 2.
 
 #### `0b11 LINKS`
 
@@ -318,7 +344,7 @@ An array of links / an inner node of a link tree.
 
 The block header is followed by a two-byte reserved field which aligns the rest
 of the block to 4. After it follows a non-delimited array of 36-byte links (see
-Links above).
+[Link](#link).)
 
 The `reserved` field is all zero, other values are reserved for future use.
 
@@ -348,6 +374,8 @@ Upon receiving a `LINKS` block, the reader MUST check the following invariants:
 
 Blocks that fail any of these invariants MUST be rejected.
 
+The alignment of a `LINKS` block is 4.
+
 ## Arbitrary size arrays
 
 The format can represent arrays of up to 2^32 elements.
@@ -367,14 +395,13 @@ level.
 There are three kinds of link trees:
 
 * `DATA` tree represents a single contiguous non-delimited array of fixed-size
-  elements. Its leaf nodes are `DATA` blocks.
-* `SLOTS` tree represents a slotted array of variable-size elements. Its leaf
-  nodes are `SLOTS` blocks.
+  elements.
+* `SLOTS` tree represents a slotted array of variable-size elements.
 * `TABLE` tree represents an array of heterogeneous elements, most typically
-  used for sub-blocks. Its leaf nodes are `TABLE` blocks.
+  used for sub-blocks.
 
 A link tree MUST be homogenous, that is, all leaf nodes MUST be of the same
-type.
+block type.
 
 #### Traversal
 
@@ -383,15 +410,24 @@ descend down into inner nodes in order to locate the leaf containing that elemen
 
 Each `LINKS` block defines its own *local* index space starting at 0. A link’s
 `limit` is a cumulative count in that enclosing `LINKS` block (not a global
-index). To correctly determine the global index, readers need to track a global
-offset when descending into inner nodes.
+index). Readers need to adjust for this when descending down the tree.
 
-When descending into a link, implementations MUST:
+When descending into a link, implementations MUST check that the child node's
+content length matches what the parent states.
 
-1. Calculate _stated content length_ of the link, by subtracting from its
-   `limit` the previous link's `limit`, if any.
-2. Verify that the pointed-to block's content length matches the stated
-   content length, and reject the data structure if it doesn't.
+The following algorithm can be used for tree traversal:
+
+1. Set `index` to queried element index.
+2. Find the link `i` whose limit is the smallest such that `limit[i] > index`.
+3. Set `position` to `limit[i-1]`, or `0` if `i` is 0. This is the starting
+   global index of link `i`'s content.
+4. Set `stated_content_length` to `limit[i] - position`.
+5. Update `index -= position` to convert to a local index within the child.
+6. Descend into child `i`.
+7. Calculate `actual_content_length` of the current node, verify that
+   `stated_content_length == actual_content_length`.
+8. If the node is a leaf (i.e., not a `LINKS` block), return the element at `index`.
+9. Else, repeat from step 2.
 
 Content length of:
  - `DATA` leaf: schema-defined length of its array
@@ -490,8 +526,8 @@ Larger values can be stored as `DIRECT`, if they fit inside the struct, or as a
 This section describes arrays whose element count is explicitly specified in the
 schema. For variable-size arrays, see [Arrays](#arrays).
 
-Such array of fixed-size elements can be stored as `DIRECT`, if it fits inside the
-block (see [Fitting](#fitting)).
+Such an array of fixed-size elements can be stored as `DIRECT`, if it fits
+inside the block (see [Fitting](#fitting)).
 
 The alignment of an array is equal to its element's alignment.
 
@@ -502,14 +538,10 @@ A fixed-size array of fixed-size elements is itself considered a fixed-size
 type, and may be an element of another array. When other constraints allow,
 such arrays-of-arrays can be stored as flat data.
 
-Arrays whose element size is smaller than half of a block (4 KiB) can be stored
-as a `LINK` to arbitrary size flat `DATA`.
-
-If the element size is larger than half of a block (4 KiB) (i.e., one block can
-fit just one element), writers SHOULD represent this array as a variable-size
-`TABLE` array whose elements are `LINK`s to the individual elements. If elements
-are larger than a block (8 KiB), writers MUST use that representation. (See
-[Arrays](#arrays).)
+Arrays whose element size is smaller than a block can be stored as a `LINK` to
+arbitrary size flat `DATA`. If the element size is larger than a block, the
+array MUST be represented as a variable-size `TABLE` array (see
+[Arrays](#arrays)).
 
 ### String types
 
@@ -547,9 +579,10 @@ There are three possible representations of an array:
 
 #### 1. Flat data
 
-If the elements are all of the same fixed size and smaller than half of a block
-(4 KiB), the array will be represented as an arbitrary size `DATA` array, which
-the reader can map into its elements in memory directly.
+If the elements are all of the same fixed size and smaller than a block -- that
+is, a single array element can fit in a `DATA` block -- then the array will be
+represented as an arbitrary size `DATA` array, which the reader can map into its
+elements in memory directly.
 
 #### 2. Slotted array
 
@@ -602,9 +635,9 @@ array), the block size including its 2-byte block header; for a link, 36 bytes.
 
 ### Struct Member Fitting
 
-When building a `TABLE` block, the writer must determine which members are
-stored inline, which are placed on the block's heap (`DIRECT` or `BLOCK`), and
-which are externalized as `LINK`s to other blocks.
+When building a single-block `TABLE` for a struct, the writer must determine
+which members are stored inline, which are placed on the block's heap (`DIRECT`
+or `BLOCK`), and which are externalized as `LINK`s to other blocks.
 
 The following rules apply:
 
@@ -680,21 +713,67 @@ If the array elements are fixed-size primitive values (e.g., `u32`, `f64`), the
 array MUST be represented as `DATA`.
 - Serialize elements contiguously.
 - If the total size exceeds the block size limit, chunk the array into
-  block-sized `DATA` blocks and build a `LINKS` tree whose leaves point to
-  those `DATA` blocks.
+  block-sized `DATA` blocks and build a `LINKS` tree whose leaves are those
+  `DATA` blocks.
 
 #### 2. Complex elements (`TABLE`)
 
 If the array elements are structs or arrays, the array MUST be represented as a
-`TABLE` of blocks, placed either as `BLOCK` or `LINK` depending on fitting.
+`TABLE` of blocks.
 
-TODO table fitting
+For the most typical case, where the reader is expected to read the array in order,
+and the writer is trying to minimize the total number of blocks, the following
+straightforward algorithm SHOULD be used:
+
+1. Start a new `TABLE` block.
+2. Follow these steps for each element:
+   1. Serialize the element into a block, set `elem` to that block.
+   2. Special case: if the encoded element is too big to embed into a table at
+      all (i.e., `element_size + sizeof(block_header) + sizeof(entry_count) +
+      sizeof(entry_offset) > max_block_size`), set `elem` to a `LINK` to the
+      block instead.
+   3. Add `elem` into the current block.
+   4. If it does not fit, optimize block storage by alignment-packing (see
+      [Struct Member Fitting](#struct-member-fitting) step 4).
+   5. If it still does not fit, seal the current block, start a new one and
+      retry.
+3. If more than one `TABLE` block is produced, build a `LINKS` tree over them.
+
+This algorithm places all blocks inline that can be inlined, minimizing the
+overall number of blocks.
+
+In special cases, implementations MAY choose a different representation:
+
+* If random access is required, or if the reader is not expected to read every
+  element, a more practical approach is to `LINK` out every block larger than a
+  link. For every single access, only the link index plus the requested block is
+  transferred, without wasting reader's memory by blocks that are not currently
+  needed.
+* In certain usecases, it might be practical to choose an application-specific
+  inline size bound, and only inline blocks smaller than that bound.
 
 #### 3. Byte strings (`SLOTS` vs `TABLE`)
 
-If the array elements are variable-sized (e.g., strings) or s
+If the array elements are variable-size byte strings (e.g., strings or raw byte
+arrays), the writer must choose between `SLOTS` and `TABLE` representation.
 
-TODO
+**Choosing `SLOTS`:** The `SLOTS` representation is available when every element
+can fit in a single `SLOTS` block (at most ~8 KiB minus overhead). `SLOTS` is
+generally preferred because it stores elements as raw bytes with no per-element
+block header, saving 2 bytes per element compared to `TABLE` (where each element
+requires a `DATA` sub-block header).
+
+To build a `SLOTS` array, pack elements sequentially into `SLOTS` blocks. When
+adding the next element would exceed the block size, seal the current block
+and start a new one.
+
+If multiple `SLOTS` blocks are produced, build a `LINKS` tree over them.
+
+**Choosing `TABLE`:** If any element is too large to fit in a single `SLOTS`
+block, the array MUST be represented as `TABLE`. In this representation, each
+byte string is stored as a `BLOCK` (containing a `DATA` sub-block of `u8`
+elements) or as a `LINK` to an external `DATA` block or `DATA` tree. The fitting
+rules from [section 2 (Complex elements)](#2-complex-elements-table) apply.
 
 ## Note on deep nesting
 
