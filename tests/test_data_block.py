@@ -2,7 +2,7 @@
 
 import pytest
 
-from wire_format.codec import DataBlock, SIZE_MAX
+from hashbuffers.codec import DataBlock, SIZE_MAX
 
 
 def test_encode_decode_data_block():

@@ -2,7 +2,7 @@
 
 import pytest
 
-from wire_format.codec import Link, LinksBlock
+from hashbuffers.codec import Link, LinksBlock
 
 
 def test_encode_decode_links_block_leaf_parent():

@@ -2,7 +2,7 @@
 
 import pytest
 
-from wire_format.codec import BlockType, DataBlock, SlotsBlock, Tagged16
+from hashbuffers.codec import BlockType, DataBlock, SlotsBlock, Tagged16
 
 
 def test_encode_decode_slots_block():

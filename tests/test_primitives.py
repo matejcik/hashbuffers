@@ -2,7 +2,7 @@
 
 import pytest
 
-from wire_format.codec import (
+from hashbuffers.codec import (
     SIZE_MAX,
     BlockType,
     Link,
