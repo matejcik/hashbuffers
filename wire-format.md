@@ -498,12 +498,14 @@ values. (most commonly `u8`).
 Booleans are represented as an `u8` enum with two allowed values `TRUE = 1` and
 `FALSE = 0`.
 
-Integers SHOULD be stored as `INLINE` if the value is 13 bits or shorter
-(counting sign bit for signed integers). When reading a signed integer from an
-`INLINE` field, the reader MUST sign-extend the value to the full width of the
-type.
+An integer SHOULD be stored as `INLINE` if its actual value fits in 13 bits or
+less (counting sign bit for signed integers), regardless of its declared type
+size.
 
-Larger values MUST be stored as `DIRECT`.
+When reading a signed integer from an `INLINE` field, the reader MUST
+sign-extend the value to the full width of the type.
+
+Integer values larger than 13 bits MUST be stored as `DIRECT`.
 
 #### Floats
 
@@ -694,7 +696,8 @@ The following rules apply:
 Because alignment padding (step 4) affects total heap consumption, writers
 SHOULD account for padding when evaluating whether fields fit in step 3. No
 simple greedy rule is optimal in all cases, however. Space-conscious writers
-can, e.g., try all permutations of heap-bound fields (feasible for typical field counts) to find the best fit.
+can, e.g., try all permutations of heap-bound fields (feasible for typical field
+counts) to find the best fit.
 
 A practical approach is to interleave steps 3 and 4: run the alignment packing
 algorithm on the candidate set of fields, and if the result exceeds the block
