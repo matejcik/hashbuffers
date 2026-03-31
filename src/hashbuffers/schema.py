@@ -20,14 +20,12 @@ from .codec import (
     DataBlock,
     Link,
     TableBlock,
-    VTableEntryType,
 )
 from .fitting import (
-    HeapField,
-    InlineValue,
+    DirectData,
+    IntField,
     TableField,
     fit_table,
-    sb_to_table_field,
 )
 from .store import BlockStore, StoredBlock
 
@@ -80,17 +78,11 @@ class Primitive(Enum):
 
     def encode_value(self, value: int | float, store: BlockStore) -> TableField:
         """Encode a primitive value into a TableField."""
-        # Try INLINE for non-float integers
         if not self.is_float:
-            int_val = int(value)
-            if self.fits_inline(int_val):
-                if self.signed and int_val < 0:
-                    return InlineValue(int_val & 0x1FFF)
-                return InlineValue(int_val)
-
-        # DIRECT: raw bytes on heap
+            return IntField(int(value), self.size, self.signed)
+        # Float: always DIRECT
         data = _encode_primitive(self, value)
-        return HeapField(VTableEntryType.DIRECT, data, self.alignment, None)
+        return DirectData(data, self.alignment)
 
     def decode_value(self, table: TableBlock, index: int, store: BlockStore) -> t.Any:
         """Decode a primitive value from a TABLE block."""
@@ -141,7 +133,7 @@ class _FixedArray:
                 f"FixedArray expects {self.count} elements, got {len(value)}"
             )
         data = _encode_fixed_array(self, value)
-        return HeapField(VTableEntryType.DIRECT, data, alignment_of(self.element), None)
+        return DirectData(data, alignment_of(self.element))
 
     def decode_value(
         self, table: TableBlock, index: int, store: BlockStore
@@ -185,7 +177,7 @@ class _VarArray:
                 sb = build_table_array([], store)
             else:
                 sb = build_slots_array([], store)
-            return sb_to_table_field(sb)
+            return sb
 
         if is_fixed_size(wire_elem):
             return self._encode_data(wire_elem, wire_values, store)
@@ -232,7 +224,7 @@ class _VarArray:
         else:
             raise TypeError(f"Cannot encode as DATA array: {wire_elem}")
         sb = build_data_array(elements, alignment_of(wire_elem), store)
-        return sb_to_table_field(sb)
+        return sb
 
     @staticmethod
     def _encode_table(
@@ -240,7 +232,7 @@ class _VarArray:
     ) -> TableField:
         encoded = [v.encode(store) for v in wire_values]
         sb = build_table_array(encoded, store)
-        return sb_to_table_field(sb)
+        return sb
 
     @staticmethod
     def _encode_slots(
@@ -250,14 +242,14 @@ class _VarArray:
         for v in wire_values:
             if isinstance(wire_elem, _VarArray):
                 tf = wire_elem.encode_value(v, store)
-                assert isinstance(tf, HeapField)
+                assert isinstance(tf, StoredBlock)
                 slot_bytes.append(tf.data)
             elif _is_hashbuffer(wire_elem):
                 slot_bytes.append(v.encode(store).data)
             else:
                 raise TypeError(f"Cannot encode as SLOTS element: {wire_elem}")
         sb = build_slots_array(slot_bytes, store)
-        return sb_to_table_field(sb)
+        return sb
 
     # --- Decode helpers (one per array representation) ---
 
@@ -585,7 +577,7 @@ class HashBuffer:
     @classmethod
     def encode_as_field(cls, value: HashBuffer, store: BlockStore) -> TableField:
         """Encode a HashBuffer value as a TABLE field (for use as nested struct)."""
-        return sb_to_table_field(value.encode(store))
+        return value.encode(store)
 
     @classmethod
     def decode_as_field(

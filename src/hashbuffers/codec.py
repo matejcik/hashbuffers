@@ -130,6 +130,26 @@ class VTableEntry:
     def encode(self) -> bytes:
         return Tagged16(self.type.value, self.offset).encode()
 
+    @classmethod
+    def null(cls) -> t.Self:
+        return cls(VTableEntryType.NULL, 0)
+
+    @classmethod
+    def inline(cls, value: int) -> t.Self:
+        return cls(VTableEntryType.INLINE, value)
+
+    @classmethod
+    def direct(cls, offset: int) -> t.Self:
+        return cls(VTableEntryType.DIRECT, offset)
+
+    @classmethod
+    def block(cls, offset: int) -> t.Self:
+        return cls(VTableEntryType.BLOCK, offset)
+
+    @classmethod
+    def link(cls, offset: int) -> t.Self:
+        return cls(VTableEntryType.LINK, offset)
+
 
 @dataclass
 class Link:

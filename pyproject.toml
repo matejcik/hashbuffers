@@ -16,6 +16,7 @@ dev = [
     "isort>=8.0.1",
     "pyright>=1.1.408",
     "pytest>=9.0.2",
+    "trezor>=0.13",
 ]
 
 [tool.isort]

@@ -12,13 +12,8 @@ Generally, code SHOULD be updated to match the spec, NOT vice versa.
 
 ## Style & Type Checking
 
-Run all style/type checks at once:
+Run all style/type checks at once: `make style`
 
-```
-make style
-```
+This runs, in order: `black`, `isort`, and `pyright`.
 
-This runs in order:
-1. `uv run black src/ tests/` — code formatting
-2. `uv run isort src/ tests/` — import sorting
-3. `uv run pyright` — static type checking
+Ignore the warning coming from `black` about not being able to format for 3.14.

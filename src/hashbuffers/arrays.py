@@ -47,6 +47,8 @@ def build_data_array(
         return store.store(block.encode(), limit=0, alignment=alignment)
 
     elem_size = len(elements[0])
+    if not all(len(elem) == elem_size for elem in elements):
+        raise ValueError("All elements must have the same size")
     padded = DataBlock.padded_elem_size(elem_size, elem_align)
     start_offset = max(elem_align, 2)
     max_elems_per_block = (max_block_size - start_offset) // padded
@@ -88,13 +90,15 @@ def build_slots_array(
     blocks: list[StoredBlock] = []
     counts: list[int] = []
     current_items: list[bytes] = []
-    current_block_size = 2 + 2 # header + sentinel
+    current_block_size = 2 + 2  # header + sentinel
 
     for i, elem in enumerate(elements):
         # Check if this element can fit alone in a block:
         # header + offset + sentinel + element
         if 2 + 4 + len(elem) > max_block_size:
-            raise ValueError(f"Element {i} too large for block even alone (size {len(elem)})")
+            raise ValueError(
+                f"Element {i} too large for block even alone (size {len(elem)})"
+            )
 
         # Check if adding this element and its offset would exceed block size
         if current_block_size + 2 + len(elem) > max_block_size:
@@ -104,8 +108,10 @@ def build_slots_array(
             blocks.append(sb)
             counts.append(len(current_items))
             current_items = [elem]
+            current_block_size = 2 + 2 + 2 + len(elem)
         else:
             current_items.append(elem)
+            current_block_size += 2 + len(elem)
 
     # Seal final block
     if current_items:
