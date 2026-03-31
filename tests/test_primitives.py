@@ -27,12 +27,12 @@ def test_t16_out_of_bounds():
 
 
 def test_block_header():
-    val = BlockType.STRUCT.encode(8000)
-    assert BlockType.decode(val) == (BlockType.STRUCT, 8000)
+    val = BlockType.TABLE.encode(8000)
+    assert BlockType.decode(val) == (BlockType.TABLE, 8000)
 
 
 def test_block_header_reserved_bit_disallowed():
-    params = (BlockType.STRUCT << 1) | 0b1
+    params = (BlockType.TABLE << 1) | 0b1
     header = Tagged16(params, 10).encode()
     with pytest.raises(ValueError):
         BlockType.decode(header)
@@ -51,6 +51,7 @@ def test_link():
 BAD_LINKS = (
     (b"a" * 31, 0),  # digest too short
     (b"a" * 33, 100),  # digest too long
+    (b"a" * 32, 0),  # limit zero is reserved
     (b"a" * 32, -1),  # limit out of bounds
     (b"a" * 32, 0xFFFF_FFFF + 1),  # limit out of bounds
 )

@@ -2,150 +2,106 @@
 
 import pytest
 
-from hashbuffers.codec import BlockType, DataBlock, SlotsBlock, Tagged16
+from hashbuffers.codec import SlotsBlock
 
 
 def test_encode_decode_slots_block():
-    heap = b"slot1slot2"
-    encoded = SlotsBlock.build(True, [10, 15, 20], heap).encode()
-    block = SlotsBlock.decode(encoded)
-    assert block.raw_entries is True
-    assert block.offsets == [10, 15, 20]
-    assert block.heap == heap
+    """Round-trip encode/decode of a SLOTS block."""
+    items = [b"slot1", b"slot2"]
+    block = SlotsBlock.build_slots(items)
+    encoded = block.encode()
+    decoded = SlotsBlock.decode(encoded)
+    assert decoded.get_entry(0) == b"slot1"
+    assert decoded.get_entry(1) == b"slot2"
+    assert decoded.element_count == 2
 
 
-def test_slots_block_raw_non_decreasing():
+def test_slots_block_non_decreasing():
+    """Offsets must be non-decreasing."""
     heap = b"testdata"
     offsets = [0, 4, 3, len(heap)]
     heap_start = SlotsBlock.heap_start(offsets)
     offsets = [off + heap_start for off in offsets]
-    block = SlotsBlock.build(True, offsets, heap)
+    block = SlotsBlock.build(offsets, heap)
     with pytest.raises(ValueError, match="non-decreasing"):
         block.validate()
 
 
-def test_slots_block_raw_invalid_sentinel():
+def test_slots_block_invalid_sentinel():
+    """Sentinel (last offset) must equal block size."""
     heap = b"testdata"
     offsets = [0, 2, 3]
     heap_start = SlotsBlock.heap_start(offsets)
     offsets = [off + heap_start for off in offsets]
-    block = SlotsBlock.build(True, offsets, heap)
+    block = SlotsBlock.build(offsets, heap)
     with pytest.raises(ValueError, match="Sentinel offset"):
         block.validate()
 
 
-def test_slots_block_non_raw_any_order():
-    data_block = DataBlock.build(b"data")
-    block = SlotsBlock.build_blocks([data_block, data_block, data_block])
-    block.validate()
-
-    block.offsets = list(reversed(block.offsets))
-    block.validate()
-
-
-
-def test_slots_block_get_raw_entry_happy_path():
+def test_slots_block_get_entry_happy_path():
     items = [b"foo", b"barbaz"]
-    block = SlotsBlock.build_raw(items)
-    assert block.get_raw_entry(0) == items[0]
-    assert block.get_raw_entry(1) == items[1]
+    block = SlotsBlock.build_slots(items)
+    assert block.get_entry(0) == items[0]
+    assert block.get_entry(1) == items[1]
 
 
-def test_slots_block_get_raw_entry_out_of_bounds():
-    block = SlotsBlock.build_raw([b"x"])
+def test_slots_block_get_entry_out_of_bounds():
+    block = SlotsBlock.build_slots([b"x"])
     with pytest.raises(ValueError, match="out of bounds"):
-        block.get_raw_entry(-1)
+        block.get_entry(-1)
     with pytest.raises(ValueError, match="out of bounds"):
-        block.get_raw_entry(1)
+        block.get_entry(1)
 
 
-def test_slots_block_decode_rejects_reserved_bits():
-    block = SlotsBlock.build_raw([b"abc", b"def"])
-    encoded = bytearray(block.encode())
-    header = Tagged16.decode(bytes(encoded[2:4]))
-    mutated = Tagged16(header.parameters | 0b011, header.number).encode()
-    encoded[2:4] = mutated
-    with pytest.raises(ValueError):
-        SlotsBlock.decode(bytes(encoded))
-
-
-def test_slots_block_non_raw_offsets_out_of_range_rejected():
-    block = SlotsBlock.build_blocks([DataBlock.build(b"x")])
-    block.offsets[0] = block.size + 10
-    with pytest.raises(ValueError, match="out of bounds"):
-        block.validate()
-
-
-def test_slots_block_empty_raw():
-    """Empty raw SLOTS block (zero items) is valid."""
-    block = SlotsBlock.build_raw([])
+def test_slots_block_empty():
+    """Empty SLOTS block (zero items) is valid."""
+    block = SlotsBlock.build_slots([])
     decoded = SlotsBlock.decode(block.encode())
-    assert decoded.raw_entries is True
-    assert decoded.offsets == [SlotsBlock.heap_start([0])]  # sentinel only
+    assert decoded.element_count == 0
     assert decoded.heap == b""
-
-
-def test_slots_block_empty_non_raw():
-    """Empty non-raw SLOTS block (zero sub-blocks) is valid."""
-    block = SlotsBlock.build_blocks([])
-    decoded = SlotsBlock.decode(block.encode())
-    assert decoded.raw_entries is False
-    assert decoded.offsets == []
-    assert decoded.heap == b""
+    # Should have exactly one offset (sentinel = 4)
+    assert decoded.offsets == [4]
 
 
 def test_slots_block_build_raw_single_entry():
-    """Single raw entry round-trips correctly."""
-    block = SlotsBlock.build_raw([b"single"])
-    assert block.get_raw_entry(0) == b"single"
+    """Single entry round-trips correctly."""
+    block = SlotsBlock.build_slots([b"single"])
+    assert block.get_entry(0) == b"single"
 
 
 def test_slots_block_build_raw_empty_first_entry():
-    """Raw entries can include empty (zero-length) strings."""
-    block = SlotsBlock.build_raw([b"", b"x"])
-    assert block.get_raw_entry(0) == b""
-    assert block.get_raw_entry(1) == b"x"
+    """Entries can include empty (zero-length) strings."""
+    block = SlotsBlock.build_slots([b"", b"x"])
+    assert block.get_entry(0) == b""
+    assert block.get_entry(1) == b"x"
 
 
-def test_slots_block_non_raw_duplicate_offsets():
-    """Non-raw SLOTS blocks allow the same offset multiple times (spec: same sub-block placed multiple times)."""
-    inner = DataBlock.build(b"shared")
-    inner_bytes = inner.encode()
-    # 2 offsets pointing to the same sub-block
-    heap_start = SlotsBlock.heap_start([0, 0])  # = 4 + 2*2 = 8
-    block = SlotsBlock.build(False, [heap_start, heap_start], inner_bytes)
-    block.validate()
-    assert block.get_block(0).get_data() == b"shared"
-    assert block.get_block(1).get_data() == b"shared"
+def test_slots_block_first_offset_validation():
+    """First offset must be >= 4, divisible by 2, and <= size."""
+    # First offset too small (< 4): build a block with offset [2] and matching size
+    # compute_size = 2 + 2*1 + 0 = 4, but offset[0]=2 is invalid
+    block = SlotsBlock(SlotsBlock.BLOCK_TYPE, 4, [2], b"")
+    with pytest.raises(ValueError, match="at least 4"):
+        block.validate()
+
+    # First offset not divisible by 2
+    block = SlotsBlock(SlotsBlock.BLOCK_TYPE, 5, [5], b"x")
+    with pytest.raises(ValueError, match="divisible by 2"):
+        block.validate()
 
 
-def test_slots_block_get_block_roundtrip():
-    """Sub-blocks stored via build_blocks can be read back with get_block."""
-    inner1 = DataBlock.build(b"first")
-    inner2 = DataBlock.build(b"second")
-    block = SlotsBlock.build_blocks([inner1, inner2])
-    result0 = block.get_block(0)
-    assert isinstance(result0, DataBlock)
-    assert result0.get_data() == b"first"
-    result1 = block.get_block(1)
-    assert isinstance(result1, DataBlock)
-    assert result1.get_data() == b"second"
+def test_slots_block_offset_count_mismatch():
+    """Offset count derived from first offset must match actual offsets."""
+    # first_offset=8 -> expected (8-2)/2 = 3 offsets, but we have 2.
+    # compute_size = 2 + 2*2 + 2 = 8, matching declared size.
+    block = SlotsBlock(SlotsBlock.BLOCK_TYPE, 8, [8, 8], b"xx")
+    with pytest.raises(ValueError, match="Offset count"):
+        block.validate()
 
 
 def test_decode_rejects_trailing_data():
     """decode() must reject input with unparsed trailing bytes."""
-    block = SlotsBlock.build_raw([b"x"])
+    block = SlotsBlock.build_slots([b"x"])
     encoded = block.encode()
     with pytest.raises(IOError, match="Unparsed trailing data"):
         SlotsBlock.decode(encoded + b"extra")
-
-
-def test_slots_block_sub_block_declared_size_exceeds_parent():
-    """Nested block header size must not extend past the enclosing SLOTS block."""
-    inner = DataBlock.build(b"x")
-    block = SlotsBlock.build_blocks([inner])
-    encoded = bytearray(block.encode())
-    heap_start = SlotsBlock.heap_start(block.offsets)
-    encoded[heap_start : heap_start + 2] = BlockType.DATA.encode(5000)
-    with pytest.raises(IOError, match="Expected to read to offset"):
-        SlotsBlock.decode(bytes(encoded))

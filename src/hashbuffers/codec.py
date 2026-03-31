@@ -1,9 +1,8 @@
+import typing as t
 from dataclasses import dataclass
 from enum import IntEnum
 from io import BytesIO
-
 from os import SEEK_CUR
-import typing as t
 
 SIZE_MAX = 0x1FFF  # 8191
 
@@ -93,7 +92,7 @@ class Tagged16:
 
 
 class BlockType(IntEnum):
-    STRUCT = 0b00
+    TABLE = 0b00
     DATA = 0b01
     SLOTS = 0b10
     LINKS = 0b11
@@ -151,7 +150,7 @@ class Link:
     def encode(self) -> bytes:
         if len(self.digest) != 32:
             raise ValueError("Invalid digest length")
-        _check_bounds(self.limit, 0, 0xFFFF_FFFF)
+        _check_bounds(self.limit, 1, 0xFFFF_FFFF)
         w = Writer()
         w.write(self.digest)
         w.write_uint(size=4, value=self.limit)
@@ -208,21 +207,21 @@ class Block:
 
 
 @dataclass
-class StructBlock(Block):
+class TableBlock(Block):
     size: int
     vtable: list[VTableEntry]
     heap: bytes
 
     reserved_bits: int = 0
 
-    BLOCK_TYPE = BlockType.STRUCT
+    BLOCK_TYPE = BlockType.TABLE
 
     def compute_size(self) -> int:
         return self.heap_start + len(self.heap)
 
     @classmethod
     def build(cls, vtable: list[VTableEntry], heap: bytes) -> t.Self:
-        new = cls(BlockType.STRUCT, 0, vtable, heap)
+        new = cls(BlockType.TABLE, 0, vtable, heap)
         new.size = new.compute_size()
         return new
 
@@ -257,8 +256,14 @@ class StructBlock(Block):
 
     def validate(self) -> None:
         super().validate()
+        if self.size < 4:
+            raise ValueError("TABLE block must be at least 4 bytes")
         if self.reserved_bits != 0:
             raise ValueError(f"Reserved bits {self.reserved_bits} are not zero")
+        if self.heap_start > self.size:
+            raise ValueError(
+                f"Entry count overflows block: heap_start {self.heap_start} > size {self.size}"
+            )
         for entry in self.vtable:
             if entry.type in (VTableEntryType.NULL, VTableEntryType.INLINE):
                 continue
@@ -267,9 +272,27 @@ class StructBlock(Block):
                     f"Vtable entry offset {entry.offset} is out of bounds ({self.heap_start}-{self.size})"
                 )
             if entry.type == VTableEntryType.LINK:
-                self._get_link(entry.offset)
-            if entry.type == VTableEntryType.BLOCK:
-                self._get_block(entry.offset)
+                if entry.offset > self.size - Link.SIZE:
+                    raise ValueError(
+                        f"LINK at offset {entry.offset} doesn't fit in block (need {Link.SIZE} bytes)"
+                    )
+                if entry.offset % 4 != 0:
+                    raise ValueError(f"LINK at offset {entry.offset} is not 4-aligned")
+                link = self._get_link(entry.offset)
+                if link.limit == 0:
+                    raise ValueError("Link limit must not be 0")
+            elif entry.type == VTableEntryType.BLOCK:
+                if entry.offset > self.size - 2:
+                    raise ValueError(
+                        f"BLOCK at offset {entry.offset} doesn't fit in block"
+                    )
+                if entry.offset % 2 != 0:
+                    raise ValueError(f"BLOCK at offset {entry.offset} is not 2-aligned")
+                sub_block = self._get_block(entry.offset)
+                if entry.offset + sub_block.size > self.size:
+                    raise ValueError(
+                        f"Sub-block at offset {entry.offset} with size {sub_block.size} exceeds parent block"
+                    )
 
     @staticmethod
     def _sign_extend_13bit(value: int) -> int:
@@ -406,30 +429,26 @@ class DataBlock(Block):
 
 @dataclass
 class SlotsBlock(Block):
-    raw_entries: bool
     offsets: list[int]
     heap: bytes
 
-    reserved_bits: int = 0
-
-    RAW_ENTRIES_BIT: t.ClassVar[int] = 0b100
     BLOCK_TYPE = BlockType.SLOTS
 
     def compute_size(self) -> int:
-        return 4 + 2 * len(self.offsets) + len(self.heap)
+        return 2 + 2 * len(self.offsets) + len(self.heap)
 
     @staticmethod
     def heap_start(offsets: list[int]) -> int:
-        return 4 + 2 * len(offsets)
+        return 2 + 2 * len(offsets)
 
     @classmethod
-    def build(cls, raw_entries: bool, offsets: list[int], heap: bytes) -> t.Self:
-        new = cls(cls.BLOCK_TYPE, 0, raw_entries, offsets, heap)
+    def build(cls, offsets: list[int], heap: bytes) -> t.Self:
+        new = cls(cls.BLOCK_TYPE, 0, offsets, heap)
         new.size = new.compute_size()
         return new
 
     @classmethod
-    def build_raw(cls, items: list[bytes]) -> t.Self:
+    def build_slots(cls, items: list[bytes]) -> t.Self:
         offsets = []
         heap = bytearray()
         for item in items:
@@ -437,56 +456,21 @@ class SlotsBlock(Block):
             heap.extend(item)
         offsets.append(len(heap))
         heap_start = cls.heap_start(offsets)
-        return cls.build(True, [off + heap_start for off in offsets], bytes(heap))
+        return cls.build([off + heap_start for off in offsets], bytes(heap))
 
-    @classmethod
-    def build_blocks(cls, items: list[Block]) -> t.Self:
-        offsets = []
-        heap = bytearray()
-        for item in items:
-            offsets.append(len(heap))
-            heap.extend(item.encode())
-        heap_start = cls.heap_start(offsets)
-        return cls.build(False, [off + heap_start for off in offsets], bytes(heap))
+    @property
+    def element_count(self) -> int:
+        return len(self.offsets) - 1
 
-    def check_index(self, index: int) -> None:
-        index_max = len(self.offsets) - 1
-        if self.raw_entries:
-            index_max -= 1
-        _check_bounds(index, 0, index_max)
-
-    def get_block(self, index: int) -> Block:
-        if self.raw_entries:
-            raise ValueError("Raw entries are not blocks")
-        heap_start = self.heap_start(self.offsets)
-        self.check_index(index)
-        offset = self.offsets[index]
-        _check_bounds(offset, heap_start, self.size - 2)
-        heap_offset = offset - heap_start
-        return decode_block(self.heap[heap_offset:], exact=False)
-
-    def get_raw_entry(self, index: int) -> bytes:
-        if not self.raw_entries:
-            raise ValueError("Raw entries are not raw entries")
-        self.check_index(index)
+    def get_entry(self, index: int) -> bytes:
+        _check_bounds(index, 0, self.element_count - 1)
         heap_start = self.heap_start(self.offsets)
         start = self.offsets[index]
-        _check_bounds(start, heap_start, self.size)
         end = self.offsets[index + 1]
-        _check_bounds(end, start, self.size)
         return self.heap[start - heap_start : end - heap_start]
 
     def _encode_without_validation(self) -> bytes:
-        if self.raw_entries:
-            params = self.RAW_ENTRIES_BIT
-            count = len(self.offsets) - 1
-        else:
-            params = 0
-            count = len(self.offsets)
-
         w = self._start_encode()
-        slot_header = Tagged16(params | self.reserved_bits, count)
-        w.write(slot_header.encode())
         for off in self.offsets:
             w.write_uint(size=2, value=off)
         w.write(self.heap)
@@ -494,76 +478,69 @@ class SlotsBlock(Block):
 
     def validate(self) -> None:
         super().validate()
-        heap_start = self.heap_start(self.offsets)
-        if self.reserved_bits != 0:
-            raise ValueError(f"Reserved bits {self.reserved_bits} are not zero")
-        if self.raw_entries:
-            if self.offsets[0] != heap_start:
-                raise ValueError(
-                    f"First offset {self.offsets[0]} is not equal to heap start {heap_start}"
-                )
-            if self.offsets[-1] != self.size:
-                raise ValueError(
-                    f"Sentinel offset {self.offsets[-1]} is not equal to block size {self.size}"
-                )
-            if any(
-                self.offsets[i] > self.offsets[i + 1]
-                for i in range(len(self.offsets) - 1)
-            ):
-                raise ValueError("Offsets are not non-decreasing")
-        else:
-            for i in range(len(self.offsets)):
-                self.get_block(i)
+        if self.size < 4:
+            raise ValueError("SLOTS block must be at least 4 bytes")
+        if not self.offsets:
+            raise ValueError("SLOTS block must have at least one offset (sentinel)")
+        first = self.offsets[0]
+        if first < 4:
+            raise ValueError(f"First offset {first} must be at least 4")
+        if first % 2 != 0:
+            raise ValueError(f"First offset {first} must be divisible by 2")
+        if first > self.size:
+            raise ValueError(f"First offset {first} exceeds block size {self.size}")
+        expected_count = (first - 2) // 2
+        if len(self.offsets) != expected_count:
+            raise ValueError(
+                f"Offset count {len(self.offsets)} does not match expected {expected_count}"
+            )
+        if any(
+            self.offsets[i] > self.offsets[i + 1] for i in range(len(self.offsets) - 1)
+        ):
+            raise ValueError("Offsets are not non-decreasing")
+        if self.offsets[-1] != self.size:
+            raise ValueError(
+                f"Sentinel offset {self.offsets[-1]} is not equal to block size {self.size}"
+            )
 
     @classmethod
     def _decode_without_validation(cls, data: bytes) -> t.Self:
         r, size = cls._start_decode(data)
-        slot_header = Tagged16.decode(r.read_exact(2))
-        raw_entries = bool(slot_header.parameters & 0b100)
-        reserved_bits = slot_header.parameters & 0b11
-        count = slot_header.number
-        if raw_entries:
-            count += 1
-        offsets_r = r.child(count * 2)
-        offsets = [offsets_r.read_uint(2) for _ in range(count)]
-        offsets_r.done()
+        if size < 4:
+            raise ValueError("SLOTS block too small")
+        first_offset = r.read_uint(2)
+        if first_offset < 4 or first_offset % 2 != 0:
+            raise ValueError(f"Invalid first offset {first_offset}")
+        offset_count = (first_offset - 2) // 2
+        offsets = [first_offset]
+        for _ in range(offset_count - 1):
+            offsets.append(r.read_uint(2))
         heap = r.read_until(size)
         r.done()
-        return cls(
-            cls.BLOCK_TYPE,
-            size,
-            raw_entries,
-            offsets,
-            heap,
-            reserved_bits=reserved_bits,
-        )
+        return cls(cls.BLOCK_TYPE, size, offsets, heap)
 
 
 @dataclass
 class LinksBlock(Block):
-    leaf_parent: bool
     links: list[Link]
 
     reserved_bits: int = 0
 
     BLOCK_TYPE = BlockType.LINKS
 
-    LEAF_PARENT_BIT: t.ClassVar[int] = 1 << 15
-
     def compute_size(self) -> int:
         return 4 + 36 * len(self.links)
 
     @classmethod
-    def build(cls, leaf_parent: bool, links: list[Link]) -> "LinksBlock":
+    def build(cls, links: list[Link]) -> "LinksBlock":
         size = 4 + 36 * len(links)
         if size > SIZE_MAX:
             raise ValueError(f"Links block exceeds {SIZE_MAX} bytes (size: {size})")
-        return cls(cls.BLOCK_TYPE, size, leaf_parent, links)
+        return cls(cls.BLOCK_TYPE, size, links)
 
     def _encode_without_validation(self) -> bytes:
         w = self._start_encode()
-        params = self.LEAF_PARENT_BIT * self.leaf_parent
-        w.write_uint(size=2, value=params | self.reserved_bits)
+        w.write_uint(size=2, value=self.reserved_bits)
         for link in self.links:
             w.write(link.encode())
         return w.getvalue()
@@ -572,26 +549,20 @@ class LinksBlock(Block):
         super().validate()
         if self.reserved_bits != 0:
             raise ValueError(f"Reserved bits {self.reserved_bits} are not zero")
-        if self.leaf_parent:
-            if any(link.limit != 0 for link in self.links):
-                raise ValueError("Leaf parent links must have limit 0")
-        else:
-            if not self.links:
-                raise ValueError("Inner node must have at least one link")
-            if any(
-                self.links[i].limit >= self.links[i + 1].limit
-                for i in range(len(self.links) - 1)
-            ):
-                raise ValueError("Links must be strictly increasing")
-            if any(link.limit == 0 for link in self.links):
-                raise ValueError("Links must not have limit 0")
+        if not self.links:
+            raise ValueError("LINKS block must have at least one link")
+        if any(
+            self.links[i].limit >= self.links[i + 1].limit
+            for i in range(len(self.links) - 1)
+        ):
+            raise ValueError("Links must be strictly increasing")
+        if any(link.limit == 0 for link in self.links):
+            raise ValueError("Links must not have limit 0")
 
     @classmethod
     def _decode_without_validation(cls, data: bytes) -> t.Self:
         r, size = cls._start_decode(data)
-        params = r.read_uint(2)
-        leaf_parent = bool(params & cls.LEAF_PARENT_BIT)
-        reserved_bits = params & ~cls.LEAF_PARENT_BIT
+        reserved_bits = r.read_uint(2)
         data_size = size - 4
         if data_size % Link.SIZE != 0:
             raise ValueError(
@@ -603,9 +574,7 @@ class LinksBlock(Block):
             links.append(Link.decode(r.read_exact(Link.SIZE)))
         r.done()
 
-        return cls(
-            cls.BLOCK_TYPE, size, leaf_parent, links, reserved_bits=reserved_bits
-        )
+        return cls(cls.BLOCK_TYPE, size, links, reserved_bits=reserved_bits)
 
 
 def decode_block(data: bytes, exact: bool = True) -> Block:
@@ -613,8 +582,8 @@ def decode_block(data: bytes, exact: bool = True) -> Block:
     block_type, size = BlockType.decode(header)
     if not exact:
         data = data[:size]
-    if block_type == BlockType.STRUCT:
-        return StructBlock.decode(data)
+    if block_type == BlockType.TABLE:
+        return TableBlock.decode(data)
     if block_type == BlockType.DATA:
         return DataBlock.decode(data)
     if block_type == BlockType.SLOTS:

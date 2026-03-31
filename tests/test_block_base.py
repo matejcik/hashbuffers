@@ -5,10 +5,10 @@ import pytest
 from hashbuffers.codec import (
     BlockType,
     DataBlock,
-    LinksBlock,
     Link,
+    LinksBlock,
     SlotsBlock,
-    StructBlock,
+    TableBlock,
     VTableEntry,
     VTableEntryType,
     decode_block,
@@ -28,15 +28,15 @@ def test_decode_block_roundtrip_all_types():
     assert isinstance(block, DataBlock)
     assert block.get_data() == b"payload"
 
-    struct = StructBlock.build([VTableEntry(VTableEntryType.NULL, 0)], b"").encode()
+    struct = TableBlock.build([VTableEntry(VTableEntryType.NULL, 0)], b"").encode()
     block = decode_block(struct)
-    assert isinstance(block, StructBlock)
+    assert isinstance(block, TableBlock)
 
-    slots = SlotsBlock.build_raw([b"x"]).encode()
+    slots = SlotsBlock.build_slots([b"x"]).encode()
     block = decode_block(slots)
     assert isinstance(block, SlotsBlock)
 
-    links = LinksBlock.build(True, [Link(b"a" * 32, 0)]).encode()
+    links = LinksBlock.build([Link(b"a" * 32, 100)]).encode()
     block = decode_block(links)
     assert isinstance(block, LinksBlock)
 
