@@ -20,8 +20,6 @@ def test_links_block_non_increasing():
 
 
 def test_links_block_zero_limit():
-    links = [Link(b"a" * 32, 10)]
-    # limit=0 is rejected at Link.encode level now, so build manually
     block = LinksBlock(BlockType.LINKS, 40, [Link(b"a" * 32, 0)])
     with pytest.raises(ValueError, match="limit 0"):
         block.validate()

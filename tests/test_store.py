@@ -51,11 +51,3 @@ def test_len():
     block = DataBlock.build(b"x").encode()
     store.store(block, limit=1)
     assert len(store) == 1
-
-
-def test_stored_block_is_namedtuple():
-    sb = StoredBlock(b"data", Link(b"d" * 32, 5), 4)
-    assert sb.data == b"data"
-    assert sb.link.digest == b"d" * 32
-    assert sb.link.limit == 5
-    assert sb.alignment == 4

@@ -4,12 +4,11 @@ import pytest
 
 from hashbuffers.arrays import (
     build_data_array,
-    build_links_tree,
     build_slots_array,
     build_table_array,
+    linktree_reduce,
 )
 from hashbuffers.codec import (
-    SIZE_MAX,
     DataBlock,
     Link,
     LinksBlock,
@@ -18,12 +17,8 @@ from hashbuffers.codec import (
     VTableEntryType,
     decode_block,
 )
-from hashbuffers.fitting import (
-    HeapField,
-    InlineValue,
-    fit_table,
-)
-from hashbuffers.store import BlockStore, StoredBlock
+from hashbuffers.fitting import DirectData, IntField, fit_table
+from hashbuffers.store import BlockStore
 
 
 @pytest.fixture
@@ -47,26 +42,42 @@ class TestFitTable:
         assert len(block.vtable) == 3
         assert all(e.type == VTableEntryType.NULL for e in block.vtable)
 
-    def test_inline_value(self, store):
-        sb = fit_table([InlineValue(42), None, InlineValue(7)], store)
+    def test_int_field_inline(self, store):
+        """IntField that fits in 13-bit range becomes INLINE."""
+        sb = fit_table(
+            [
+                IntField(0, 8),
+                IntField(100, 4),
+                IntField(-5, 2, signed=True),
+            ],
+            store,
+        )
         block = TableBlock.decode(sb.data)
-        assert block.get_int(0, 2) == 42
-        assert block.get_int(1, 2) is None
-        assert block.get_int(2, 2) == 7
+        assert block.vtable[0].type == VTableEntryType.INLINE
+        assert block.get_int(0, 8) == 0
+        assert block.vtable[1].type == VTableEntryType.INLINE
+        assert block.get_int(1, 4) == 100
+        assert block.vtable[2].type == VTableEntryType.INLINE
+        assert block.get_int(2, 2, signed=True) == -5
 
-    def test_direct_field(self, store):
-        value = (0xDEADBEEF).to_bytes(4, "little")
-        heap_start = 4 + 2 * 1  # 1 entry
-        field = HeapField(VTableEntryType.DIRECT, value, 4, None)
-        sb = fit_table([field], store)
+    def test_int_field_direct(self, store):
+        """IntField too large for inline becomes DIRECT."""
+        sb = fit_table([IntField(0xDEADBEEF, 4)], store)
         block = TableBlock.decode(sb.data)
+        assert block.vtable[0].type == VTableEntryType.DIRECT
         assert block.get_int(0, 4) == 0xDEADBEEF
 
-    def test_block_field(self, store):
+    def test_direct_data(self, store):
+        value = b"deadbeef"
+        sb = fit_table([DirectData(value, 4)], store)
+        block = TableBlock.decode(sb.data)
+        assert block.vtable[0].type == VTableEntryType.DIRECT
+        assert block.get_fixedsize(0, len(value)) == value
+
+    def test_stored_block_field(self, store):
         inner = DataBlock.build(b"nested payload")
-        inner_bytes = inner.encode()
-        field = HeapField(VTableEntryType.BLOCK, inner_bytes, 2, None)
-        sb = fit_table([field], store)
+        inner_sb = store.store(inner.encode(), limit=len(inner.data), alignment=2)
+        sb = fit_table([inner_sb], store)
         block = TableBlock.decode(sb.data)
         result = block.get_block(0)
         assert isinstance(result, DataBlock)
@@ -79,23 +90,24 @@ class TestFitTable:
         block = TableBlock.decode(sb.data)
         result = block.get_block(0)
         assert isinstance(result, Link)
-        assert result.digest == b"x" * 32
-        assert result.limit == 100
+        assert result.digest == link.digest
+        assert result.limit == link.limit
         assert sb.alignment >= 4  # LINK requires 4-alignment
 
     def test_mixed_fields(self, store):
         """Table with a mix of INLINE, DIRECT, BLOCK, LINK, and NULL."""
         inner = DataBlock.build(b"sub")
+        inner_sb = store.store(inner.encode(), limit=1, alignment=2)
         fields = [
-            InlineValue(5),  # 0: INLINE
+            IntField(0, 2),  # 0: INLINE
             None,  # 1: NULL
-            HeapField(VTableEntryType.DIRECT, b"\x01\x02", 2, None),  # 2: DIRECT
-            HeapField(VTableEntryType.BLOCK, inner.encode(), 2, None),  # 3: BLOCK
+            DirectData(b"\x01\x02", 2),  # 2: DIRECT
+            inner_sb,  # 3: BLOCK
             Link(b"a" * 32, 50),  # 4: LINK
         ]
         sb = fit_table(fields, store)
         block = TableBlock.decode(sb.data)
-        assert block.get_int(0, 2) == 5
+        assert block.get_int(0, 2) == 0
         assert block.get_int(1, 2) is None
         assert block.get_fixedsize(2, 2) == b"\x01\x02"
         inner_result = block.get_block(3)
@@ -103,43 +115,51 @@ class TestFitTable:
         link_result = block.get_block(4)
         assert isinstance(link_result, Link)
 
-    def test_small_values_rule(self, store):
-        """Fields ≤ 36 bytes must NOT become LINK even if block is tight."""
-        small_data = b"x" * 36  # exactly 36 bytes = Link.SIZE
-        link = Link(b"d" * 32, 1)
-        field = HeapField(VTableEntryType.DIRECT, small_data, 1, link)
-        sb = fit_table([field], store)
-        block = TableBlock.decode(sb.data)
-        # Must be DIRECT, not LINK
-        assert block.vtable[0].type == VTableEntryType.DIRECT
-
-    def test_overflow_to_link(self, store):
-        """Field too large for block overflows to LINK."""
-        large_data = b"x" * 200
-        link = Link(b"d" * 32, 1)
-        field = HeapField(VTableEntryType.BLOCK, large_data, 2, link)
-
-        # Use a very small max_block_size to force overflow
-        sb = fit_table([field], store, max_block_size=50)
+    def test_small_stored_block_auto_embedded(self, store):
+        """StoredBlocks ≤ 36 bytes must NOT become LINK even if block is tight."""
+        small_data = b"\x00" * 34  # 36 bytes encoded (with 2-byte header)
+        must_embed = DataBlock.build(small_data)
+        can_outlink = DataBlock.build(small_data + b"x")
+        assert len(must_embed.encode()) <= Link.SIZE
+        assert len(can_outlink.encode()) > Link.SIZE
+        must_embed_sb = store.store(must_embed.encode(), limit=1, alignment=1)
+        can_outlink_sb = store.store(can_outlink.encode(), limit=1, alignment=1)
+        # put `can_outlink` first
+        sb = fit_table(
+            [can_outlink_sb, must_embed_sb],
+            store,
+            max_block_size=2  # header
+            + 2  # entry count
+            + 2 * 2  # entry offsets
+            + len(must_embed_sb.data)
+            + len(can_outlink_sb.data)
+            - 1,  # so that both data blocks can't fit
+        )
         block = TableBlock.decode(sb.data)
         assert block.vtable[0].type == VTableEntryType.LINK
+        assert block.vtable[1].type == VTableEntryType.BLOCK
 
-    def test_smallest_first_heuristic(self, store):
-        """Smallest fields are packed first when space is limited."""
-        link_big = Link(b"b" * 32, 1)
-        link_small = Link(b"s" * 32, 2)
-        big = HeapField(VTableEntryType.DIRECT, b"x" * 100, 1, link_big)
-        small = HeapField(VTableEntryType.DIRECT, b"y" * 10, 1, link_small)
-        # Order: big first, small second. But small should be packed first.
-        sb = fit_table([big, small], store, max_block_size=60)
+    def test_overflow_to_link(self, store):
+        """StoredBlock too large for block overflows to LINK."""
+        large_inner = DataBlock.build(b"x" * 200)
+        large_sb = store.store(large_inner.encode(), limit=1, alignment=2)
+
+        # Use a very small max_block_size to force overflow
+        sb = fit_table(
+            [large_sb],
+            store,
+            max_block_size=2  # header
+            + 2  # entry count
+            + 2  # entry offset
+            + len(large_sb.data)
+            - 1,  # so that the data block can't fit
+        )
         block = TableBlock.decode(sb.data)
-        # Small should be DIRECT, big should overflow to LINK
-        assert block.vtable[1].type == VTableEntryType.DIRECT
         assert block.vtable[0].type == VTableEntryType.LINK
 
     def test_alignment_tracking(self, store):
         """Block alignment is the max of all field alignments."""
-        field = HeapField(VTableEntryType.DIRECT, b"\x00" * 8, 8, None)
+        field = DirectData(b"\x00" * 8, 8)
         sb = fit_table([field], store)
         assert sb.alignment == 8
 
@@ -233,11 +253,11 @@ class TestBuildTableArray:
 class TestBuildLinksTree:
     def test_single_level(self, store):
         blocks = []
-        for i in range(3):
+        for _ in range(3):
             data = DataBlock.build(b"x").encode()
             blocks.append(store.store(data, limit=10, alignment=2))
 
-        sb = build_links_tree(blocks, [10, 10, 10], store)
+        sb = linktree_reduce(blocks, store)
         block = LinksBlock.decode(sb.data)
         assert len(block.links) == 3
         assert block.links[0].limit == 10
@@ -245,6 +265,14 @@ class TestBuildLinksTree:
         assert block.links[2].limit == 30
         assert sb.link.limit == 30
 
+    def test_no_tree(self, store):
+        block = DataBlock.build(b"x")
+        sb = store.store(block.encode(), limit=1, alignment=1)
+        linktree = linktree_reduce([sb], store)
+        block = decode_block(linktree.data)
+        assert isinstance(block, DataBlock)
+        assert block.get_data() == b"x"
+
     def test_empty_raises(self, store):
         with pytest.raises(ValueError):
-            build_links_tree([], [], store)
+            linktree_reduce([], store)

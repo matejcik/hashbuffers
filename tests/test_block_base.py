@@ -21,21 +21,26 @@ def test_block_validate_size_mismatch():
         block.validate()
 
 
-def test_decode_block_roundtrip_all_types():
-    """decode_block round-trips each block type."""
+def test_decode_block_roundtrip_data():
     data = DataBlock.build(b"payload").encode()
     block = decode_block(data)
     assert isinstance(block, DataBlock)
     assert block.get_data() == b"payload"
 
-    struct = TableBlock.build([VTableEntry(VTableEntryType.NULL, 0)], b"").encode()
-    block = decode_block(struct)
+
+def test_decode_block_roundtrip_table():
+    table = TableBlock.build([VTableEntry(VTableEntryType.NULL, 0)], b"").encode()
+    block = decode_block(table)
     assert isinstance(block, TableBlock)
 
+
+def test_decode_block_roundtrip_slots():
     slots = SlotsBlock.build_slots([b"x"]).encode()
     block = decode_block(slots)
     assert isinstance(block, SlotsBlock)
 
+
+def test_decode_block_roundtrip_links():
     links = LinksBlock.build([Link(b"a" * 32, 100)]).encode()
     block = decode_block(links)
     assert isinstance(block, LinksBlock)

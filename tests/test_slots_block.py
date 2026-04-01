@@ -20,7 +20,7 @@ def test_slots_block_non_decreasing():
     """Offsets must be non-decreasing."""
     heap = b"testdata"
     offsets = [0, 4, 3, len(heap)]
-    heap_start = SlotsBlock.heap_start(offsets)
+    heap_start = SlotsBlock.heap_start(len(offsets))
     offsets = [off + heap_start for off in offsets]
     block = SlotsBlock.build(offsets, heap)
     with pytest.raises(ValueError, match="non-decreasing"):
@@ -31,7 +31,7 @@ def test_slots_block_invalid_sentinel():
     """Sentinel (last offset) must equal block size."""
     heap = b"testdata"
     offsets = [0, 2, 3]
-    heap_start = SlotsBlock.heap_start(offsets)
+    heap_start = SlotsBlock.heap_start(len(offsets))
     offsets = [off + heap_start for off in offsets]
     block = SlotsBlock.build(offsets, heap)
     with pytest.raises(ValueError, match="Sentinel offset"):

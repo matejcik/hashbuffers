@@ -49,7 +49,7 @@ def test_decode_rejects_reserved_vtable_types():
         [VTableEntry(VTableEntryType.NULL, 0)],
         b"",
     )
-    encoded = bytearray(valid.encode())
+    encoded = valid.encode()
     # Layout: header 0-1, vtable_header 2-3, first vtable_entry 4-5
     for reserved_type in (0b001, 0b010, 0b011):
         encoded_mut = bytearray(encoded)
@@ -79,7 +79,7 @@ def test_get_int_direct_u32():
     """DIRECT entry pointing to a u32 on the heap is read back correctly."""
     value = 0xDEAD_BEEF
     heap = value.to_bytes(4, "little")
-    heap_start = 4 + 2 * 1  # header + vtable_header + 1 entry
+    heap_start = TableBlock.heap_start(1)
     block = TableBlock.build(
         [VTableEntry(VTableEntryType.DIRECT, heap_start)],
         heap,
@@ -109,7 +109,7 @@ def test_get_block_with_nested_block():
     """BLOCK entry containing a real sub-block is read back correctly."""
     inner = DataBlock.build(b"nested payload")
     inner_bytes = inner.encode()
-    heap_start = 4 + 2 * 1
+    heap_start = TableBlock.heap_start(1)
     block = TableBlock.build(
         [VTableEntry(VTableEntryType.BLOCK, heap_start)],
         inner_bytes,
@@ -123,7 +123,7 @@ def test_get_block_with_real_link():
     """LINK entry containing a properly encoded Link is read back correctly."""
     link = Link(b"x" * 32, 42)
     link_bytes = link.encode()
-    heap_start = 4 + 2 * 1
+    heap_start = TableBlock.heap_start(1)
     block = TableBlock.build(
         [VTableEntry(VTableEntryType.LINK, heap_start)],
         link_bytes,
@@ -137,7 +137,7 @@ def test_get_block_with_real_link():
 def test_get_fixedsize():
     """DIRECT entry for fixed-size data is read back correctly."""
     raw = b"\x01\x02\x03\x04\x05\x06\x07\x08"
-    heap_start = 4 + 2 * 1
+    heap_start = TableBlock.heap_start(1)
     block = TableBlock.build(
         [VTableEntry(VTableEntryType.DIRECT, heap_start)],
         raw,
@@ -176,7 +176,7 @@ def test_decode_rejects_reserved_vtable_header_flags():
 
 def test_direct_offset_out_of_bounds():
     """DIRECT entry with offset past heap boundary is caught during validation."""
-    heap_start = 4 + 2 * 1
+    heap_start = TableBlock.heap_start(1)
     block = TableBlock.build(
         [VTableEntry(VTableEntryType.DIRECT, heap_start + 100)],
         b"small",
@@ -197,7 +197,7 @@ def test_table_block_heap_pointer_offset_zero_rejected():
 
 def test_table_block_nested_block_declared_size_exceeds_parent():
     """Sub-block wire size must fit inside the parent block (bounds checking)."""
-    heap_start = 4 + 2 * 1
+    heap_start = TableBlock.heap_start(1)
     inner = DataBlock.build(b"x")
     inner_bytes = bytearray(inner.encode())
     inner_bytes[0:2] = BlockType.DATA.encode(5000)
@@ -211,7 +211,7 @@ def test_table_block_nested_block_declared_size_exceeds_parent():
 
 def test_table_block_link_payload_truncated():
     """LINK entry must have a full 36-byte encoding inside the parent."""
-    heap_start = 4 + 2 * 1
+    heap_start = TableBlock.heap_start(1)
     block = TableBlock.build(
         [VTableEntry(VTableEntryType.LINK, heap_start)],
         b"\x00" * 10,
@@ -223,7 +223,7 @@ def test_table_block_link_payload_truncated():
 def test_table_block_link_alignment():
     """LINK entry offset must be 4-aligned."""
     # heap_start = 4 + 2*1 = 6, which is not 4-aligned
-    heap_start = 6
+    heap_start = TableBlock.heap_start(1)
     link_bytes = Link(b"x" * 32, 42).encode()
     block = TableBlock.build(
         [VTableEntry(VTableEntryType.LINK, heap_start)],
@@ -236,7 +236,6 @@ def test_table_block_link_alignment():
 def test_table_block_link_limit_zero_rejected():
     """LINK entry with limit=0 is rejected during TABLE validation."""
     # Need to bypass Link.encode()'s own limit check by building raw bytes
-    heap_start = 4 + 2 * 1  # = 6, but we need 4-alignment for link
     # Use 2 entries so heap_start = 4 + 2*2 = 8 (4-aligned)
     link_data = b"x" * 32 + (0).to_bytes(4, "little")  # limit=0
     block = TableBlock.build(
@@ -251,11 +250,12 @@ def test_table_block_block_alignment():
     """BLOCK entry offset must be 2-aligned."""
     # Construct a block where the BLOCK entry has an odd offset
     # heap_start = 4 + 2*1 = 6. Place padding byte + inner block at offset 7
+    heap_start = TableBlock.heap_start(1)
     inner = DataBlock.build(b"x")
     inner_bytes = inner.encode()
     heap = b"\x00" + inner_bytes  # padding byte shifts inner to offset 7
     block = TableBlock.build(
-        [VTableEntry(VTableEntryType.BLOCK, 7)],
+        [VTableEntry(VTableEntryType.BLOCK, heap_start + 1)],
         heap,
     )
     with pytest.raises(ValueError, match="not 2-aligned"):
@@ -264,7 +264,7 @@ def test_table_block_block_alignment():
 
 def test_table_block_block_exceeds_parent():
     """Sub-block declared size exceeding remaining space is caught during decode."""
-    heap_start = 4 + 2 * 1  # = 6
+    heap_start = TableBlock.heap_start(1)  # = 6
     inner = DataBlock.build(b"x")
     inner_bytes = bytearray(inner.encode())
     # Inflate the inner block's declared size beyond what the parent provides

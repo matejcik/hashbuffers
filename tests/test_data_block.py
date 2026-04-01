@@ -24,12 +24,6 @@ def test_encode_data_block_padding_alignment():
     assert block.get_data(align=1)[2:] == raw_payload
 
 
-def test_data_block_exceeds_max_size():
-    data = b"A" * SIZE_MAX
-    with pytest.raises(ValueError, match="out of bounds"):
-        DataBlock.build(data).encode()
-
-
 def test_decode_block_size_mismatch():
     data = b"hello world 123"
     encoded = DataBlock.build(data).encode()
@@ -59,6 +53,12 @@ def test_data_block_exactly_at_size_max():
     assert decoded.get_data() == payload
 
 
+def test_data_block_exceeds_max_size():
+    data = b"A" * (SIZE_MAX - 1)  # header is 2 bytes, so max is SIZE_MAX - 1
+    with pytest.raises(ValueError, match="out of bounds"):
+        DataBlock.build(data).encode()
+
+
 def test_data_block_padding_align_8():
     """align=8 produces 6 bytes of padding before data."""
     payload = b"ABCDEFGH"
@@ -84,9 +84,9 @@ def test_decode_rejects_trailing_data():
 
 
 def test_zero_length_array_as_empty_data_block():
-    """Spec: zero-length arrays can use an empty DATA block (via BLOCK wrapper)."""
+    """Spec: zero-length arrays can use an empty DATA block."""
     empty = DataBlock.build_array([], align=4)
-    assert empty.size == 2 + (max(4, 2) - 2)  # header + alignment padding only
+    assert empty.size == 2 + 2  # header + alignment padding only
     roundtrip = DataBlock.decode(empty.encode())
     assert roundtrip.array_length(elem_size=1, align=4) == 0
     assert roundtrip.get_array(elem_size=1, align=4) == []
