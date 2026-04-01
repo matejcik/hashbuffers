@@ -158,7 +158,7 @@ def alignment_pack(
     # optimization: ignore inline fields (alignment 0)
     remaining = [f for f in fields if f.alignment > 0]
 
-    heap_start = 4 + 2 * len(fields)
+    heap_start = TableBlock.heap_start(len(fields))
     heap_size = max_block_size - heap_start
     current_offset = 0
 
@@ -292,7 +292,7 @@ def build_table(entries: list[TableEntry], heap_size: int) -> TableBlock:
 
     Generates the heap bytes and the vtable, and returns the TABLE block.
     """
-    heap_start = 4 + 2 * len(entries)
+    heap_start = TableBlock.heap_start(len(entries))
     vtable = []
     heap = bytearray(heap_size)
     for entry in entries:

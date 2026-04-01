@@ -237,7 +237,7 @@ class TableBlock(Block):
     BLOCK_TYPE = BlockType.TABLE
 
     def compute_size(self) -> int:
-        return self.heap_start + len(self.heap)
+        return self.heap_start(len(self.vtable)) + len(self.heap)
 
     @classmethod
     def build(cls, vtable: list[VTableEntry], heap: bytes) -> t.Self:
@@ -245,16 +245,17 @@ class TableBlock(Block):
         new.size = new.compute_size()
         return new
 
-    @property
-    def heap_start(self) -> int:
-        return 4 + 2 * len(self.vtable)
+    @staticmethod
+    def heap_start(vtable_count: int) -> int:
+        return 4 + 2 * vtable_count
 
     def get_heap_data(self, offset: int, length: int | None = None) -> bytes:
+        heap_start = self.heap_start(len(self.vtable))
         if length is None:
             length = self.size - offset
-        if offset < self.heap_start or length < 0 or offset + length > self.size:
+        if offset < heap_start or length < 0 or offset + length > self.size:
             raise ValueError("Heap read out of bounds")
-        offset -= self.heap_start
+        offset -= heap_start
         return self.heap[offset : offset + length]
 
     def _get_block(self, offset: int) -> Block:
@@ -276,20 +277,21 @@ class TableBlock(Block):
 
     def validate(self) -> None:
         super().validate()
+        heap_start = self.heap_start(len(self.vtable))
         if self.size < 4:
             raise ValueError("TABLE block must be at least 4 bytes")
         if self.reserved_bits != 0:
             raise ValueError(f"Reserved bits {self.reserved_bits} are not zero")
-        if self.heap_start > self.size:
+        if heap_start > self.size:
             raise ValueError(
-                f"Entry count overflows block: heap_start {self.heap_start} > size {self.size}"
+                f"Entry count overflows block: heap_start {heap_start} > size {self.size}"
             )
         for entry in self.vtable:
             if entry.type in (VTableEntryType.NULL, VTableEntryType.INLINE):
                 continue
-            if entry.offset < self.heap_start or entry.offset >= self.size:
+            if entry.offset < heap_start or entry.offset >= self.size:
                 raise ValueError(
-                    f"Vtable entry offset {entry.offset} is out of bounds ({self.heap_start}-{self.size})"
+                    f"Vtable entry offset {entry.offset} is out of bounds ({heap_start}-{self.size})"
                 )
             if entry.type == VTableEntryType.LINK:
                 if entry.offset > self.size - Link.SIZE:
@@ -458,8 +460,8 @@ class SlotsBlock(Block):
         return 2 + 2 * len(self.offsets) + len(self.heap)
 
     @staticmethod
-    def heap_start(offsets: list[int]) -> int:
-        return 2 + 2 * len(offsets)
+    def heap_start(offsets_len: int) -> int:
+        return 2 + 2 * offsets_len
 
     @classmethod
     def build(cls, offsets: list[int], heap: bytes) -> t.Self:
@@ -475,7 +477,7 @@ class SlotsBlock(Block):
             offsets.append(len(heap))
             heap.extend(item)
         offsets.append(len(heap))
-        heap_start = cls.heap_start(offsets)
+        heap_start = cls.heap_start(len(offsets))
         return cls.build([off + heap_start for off in offsets], bytes(heap))
 
     @property
@@ -484,7 +486,7 @@ class SlotsBlock(Block):
 
     def get_entry(self, index: int) -> bytes:
         _check_bounds(index, 0, self.element_count - 1)
-        heap_start = self.heap_start(self.offsets)
+        heap_start = self.heap_start(len(self.offsets))
         start = self.offsets[index]
         end = self.offsets[index + 1]
         return self.heap[start - heap_start : end - heap_start]
