@@ -6,6 +6,7 @@ Maps to spec section "Fitting → Struct Member Fitting".
 from __future__ import annotations
 
 import typing as t
+from collections import defaultdict
 from dataclasses import dataclass
 
 from .codec import (
@@ -42,9 +43,9 @@ class IntField:
             )
         return VTableEntry.inline(_inline_encode(self.value, self.signed))
 
-    def as_direct(self, index: int) -> HeapEntry:
+    def as_direct(self) -> TableEntry:
         data = self.value.to_bytes(self.size, "little", signed=self.signed)
-        return HeapEntry(index, VTableEntryType.DIRECT, data, alignment=self.size)
+        return TableEntry(VTableEntryType.DIRECT, data, alignment=self.size)
 
 
 @dataclass
@@ -57,38 +58,51 @@ class DirectData:
     data: bytes
     alignment: int
 
-    def as_direct(self, index: int) -> HeapEntry:
-        return HeapEntry(
-            index, VTableEntryType.DIRECT, self.data, alignment=self.alignment
-        )
+    def as_direct(self) -> TableEntry:
+        return TableEntry(VTableEntryType.DIRECT, self.data, alignment=self.alignment)
 
 
 # Input type for fit_table.
 # None=NULL, int=INLINE (must fit 13-bit unsigned), IntField=auto INLINE/DIRECT,
 # DirectData=DIRECT, StoredBlock=BLOCK (may externalize to LINK), Link=LINK.
-TableField = None | int | IntField | DirectData | StoredBlock | Link
+TableField = None | IntField | DirectData | StoredBlock | Link
 
 
 @dataclass
-class HeapEntry:
+class TableEntry:
     """Resolved heap entry ready for placement."""
 
-    vt_index: int
-    entry_type: VTableEntryType
+    vt_type: VTableEntryType
     data: bytes
     alignment: int
+
+    inline_value: int | None = None
     heap_offset: int | None = None
+    """Zero-based offset into the heap. None if not yet placed."""
     link: Link | None = None
 
     @classmethod
-    def from_block(cls, index: int, block: StoredBlock) -> t.Self:
-        return cls(
-            index, VTableEntryType.BLOCK, block.data, block.alignment, link=block.link
-        )
+    def _inline_entry(cls, vt_entry: VTableEntry) -> t.Self:
+        return cls(vt_entry.type, b"", 0, inline_value=vt_entry.offset, heap_offset=0)
 
     @classmethod
-    def from_link(cls, index: int, link: Link) -> t.Self:
-        return cls(index, VTableEntryType.LINK, link.encode(), 4)
+    def null(cls) -> t.Self:
+        return cls._inline_entry(VTableEntry.null())
+
+    @classmethod
+    def int_field(cls, field: IntField) -> "TableEntry":
+        try:
+            return cls._inline_entry(field.as_inline())
+        except ValueError:
+            return field.as_direct()
+
+    @classmethod
+    def from_block(cls, block: StoredBlock) -> t.Self:
+        return cls(VTableEntryType.BLOCK, block.data, block.alignment, link=block.link)
+
+    @classmethod
+    def from_link(cls, link: Link) -> t.Self:
+        return cls(VTableEntryType.LINK, link.encode(), 4)
 
     @property
     def preserves_alignment(self) -> bool:
@@ -97,6 +111,18 @@ class HeapEntry:
     @property
     def align_score(self) -> tuple[int, bool]:
         return (self.alignment, self.preserves_alignment)
+
+    def place(self, heap: bytearray, heap_start: int) -> VTableEntry:
+        assert self.heap_offset is not None, "Heap entry is not placed yet!"
+        start = self.heap_offset
+        end = start + len(self.data)
+        assert len(heap) >= end, "Heap is too small"
+        heap[start:end] = self.data
+        if self.inline_value is not None:
+            vt_offset = self.inline_value
+        else:
+            vt_offset = self.heap_offset + heap_start
+        return VTableEntry(self.vt_type, vt_offset)
 
 
 def _fits_inline(value: int, *, signed: bool) -> bool:
@@ -119,54 +145,79 @@ def _available_alignment(offset: int) -> int:
     return offset & -offset
 
 
-def _alignment_pack(
-    fields: list[HeapEntry],
-    heap_start: int,
-    max_size: int,
-) -> int:
+def alignment_pack(
+    fields: list[TableEntry],
+    max_block_size: int,
+) -> tuple[int, int]:
     """Pack fields onto the heap using alignment-aware placement.
 
-    Returns the final offset of the heap.
+    Raises if the heap doesn't have enough space to pack all fields.
 
-    Raises if it is not possible to pack all fields into the block.
+    Returns the actual heap space consumed and the maximum alignment used.
     """
-    current_offset = heap_start
-    remaining = fields[:]
+    # optimization: ignore inline fields (alignment 0)
+    remaining = [f for f in fields if f.alignment > 0]
 
-    while remaining:
-        avail_align = _available_alignment(current_offset)
-        best_idx = None
-        best_score = (-1, False)
+    heap_start = 4 + 2 * len(fields)
+    heap_size = max_block_size - heap_start
+    current_offset = 0
 
-        for i, f in enumerate(remaining):
-            if f.alignment > avail_align:
-                continue
-            if current_offset + len(f.data) > max_size:
-                continue
-            if f.align_score > best_score:
-                best_score = f.align_score
-                best_idx = i
+    max_align = 2
 
-        if best_idx is not None:
-            f = remaining.pop(best_idx)
-            f.heap_offset = current_offset
-            current_offset += len(f.data)
-        else:
-            # Try adding 1 byte of padding
-            if current_offset + 1 <= max_size:
-                current_offset += 1
-            else:
-                raise ValueError(f"No field fits in block at offset {current_offset}")
+    align_groups = defaultdict(list)
 
-            # Check if any remaining field could still fit
-            if not any(current_offset + len(f.data) <= max_size for f in remaining):
-                raise ValueError(f"No field fits in block at offset {current_offset}")
+    # group fields by their alignment
+    for f in remaining:
+        if f.alignment.bit_count() != 1:
+            # not a power-of-two, raise:
+            raise ValueError(
+                f"Field {f} has invalid alignment: {f.alignment} (not a power-of-two)"
+            )
+        align_groups[f.alignment].append(f)
 
-    return current_offset
+    # sort within groups: (1) alignment-preserving, (2) smallest first
+    for group in align_groups.values():
+        group.sort(key=lambda f: (f.preserves_alignment, len(f.data)))
+
+    while align_groups:
+        # find the largest available alignment
+        avail_align = _available_alignment(current_offset + heap_start)
+        # find the group with highest alignment requirement that can fit here
+        while avail_align > 0 and avail_align not in align_groups:
+            avail_align //= 2
+
+        # no alignment available, try adding 1 byte of padding
+        if avail_align == 0:
+            if current_offset + 1 >= heap_size:
+                raise ValueError(f"No space left in block")
+            current_offset += 1
+            continue  # retry with new offset
+
+        # found a group that can fit here
+        group = align_groups[avail_align]
+        assert group, "Group is empty, we failed to clean up after ourselves."
+        # take the first field
+        field = group.pop(0)
+        if not group:
+            del align_groups[avail_align]
+
+        # this is the smallest field that can fit here
+        # but in general, we have to fit all fields. if _any_ field
+        # doesn't fit, raise an error.
+        if len(field.data) > heap_size - current_offset:
+            raise ValueError(
+                f"Field {field} doesn't fit in block at offset {current_offset}"
+            )
+        # place the field
+        field.heap_offset = current_offset
+        max_align = max(max_align, field.alignment)
+        current_offset += len(field.data)
+
+    return current_offset, max_align
 
 
 def fit_table(
-    fields: t.Sequence[TableField],
+    fields: list[TableField],
     store: BlockStore,
     *,
     max_block_size: int = SIZE_MAX,
@@ -175,7 +226,6 @@ def fit_table(
 
     The position in the sequence is the vtable index. Accepts:
     - None → NULL
-    - int → INLINE (must fit 13-bit unsigned)
     - IntField → auto INLINE/DIRECT based on value range
     - DirectData → DIRECT on heap (mandatory)
     - StoredBlock → BLOCK on heap; may overflow to LINK if too large
@@ -184,76 +234,67 @@ def fit_table(
     StoredBlocks ≤ 36 bytes are always embedded. Larger StoredBlocks use
     smallest-first heuristic; overflow becomes LINK entries.
     """
-    entry_count = len(fields)
-    heap_start = 4 + 2 * entry_count
-
-    vtable = [VTableEntry.null()] * entry_count
-    max_align = 2
-
-    # Mandatory heap entries (always placed)
-    mandatory: list[HeapEntry] = []
-    # Optional StoredBlocks (can be externalized to LINK)
-    optional: list[tuple[int, StoredBlock]] = []
-    optional_blocks: list[HeapEntry] = []
-    optional_links: list[HeapEntry] = []
+    # All vtable entries
+    entries: list[TableEntry] = []
+    # Optional heap entries that are allowed to be linked out
+    optional: list[tuple[int, TableEntry]] = []
 
     for i, field in enumerate(fields):
         if field is None:
             # already NULL in the pre-filled vtable
-            continue
-        elif isinstance(field, int):
-            if not _fits_inline(field, signed=False):
-                raise ValueError(
-                    f"Bare int {field} doesn't fit in 13-bit unsigned inline"
-                )
-            vtable[i] = VTableEntry.inline(field)
+            entries.append(TableEntry.null())
         elif isinstance(field, IntField):
-            try:
-                vtable[i] = field.as_inline()
-            except ValueError:
-                mandatory.append(field.as_direct(i))
+            entries.append(TableEntry.int_field(field))
         elif isinstance(field, DirectData):
-            mandatory.append(field.as_direct(i))
+            entries.append(field.as_direct())
         elif isinstance(field, Link):
-            mandatory.append(HeapEntry.from_link(i, field))
-            max_align = max(max_align, 4)
+            entries.append(TableEntry.from_link(field))
         elif isinstance(field, StoredBlock):
-            block_entry = HeapEntry.from_block(i, field)
-            if len(field.data) <= Link.SIZE:
-                mandatory.append(block_entry)
-            else:
-                optional_blocks.append(block_entry)
+            block_entry = TableEntry.from_block(field)
+            entries.append(block_entry)
+            if len(field.data) > Link.SIZE:
+                assert (
+                    field.link.limit > 0
+                ), "Link limit is 0 -- outlinked empty array? should not happen"
+                # try to store as block, fitting pass will
+                # convert to link if necessary
+                optional.append((i, block_entry))
         else:
             raise TypeError(f"Unexpected field type: {type(field)}")
 
     # Sort optional by size ascending (smallest first for packing heuristic)
-    optional_blocks.sort(key=lambda x: len(x.data))
+    optional.sort(key=lambda x: len(x[1].data))
 
     while True:
-        all_heap = mandatory + optional_links + optional_blocks
         try:
-            _alignment_pack(all_heap, heap_start, max_block_size)
+            heap_size, max_align = alignment_pack(entries, max_block_size)
             break
         except ValueError:
-            if not optional_blocks:
+            if not optional:
+                # all optional blocks have been converted to links
+                # and still don't fit, so we can't fit the table
                 raise
-            last_block = optional_blocks.pop()
-            assert last_block.link is not None, "Block in optional_blocks is missing its link"
-            optional_links.append(HeapEntry.from_link(last_block.vt_index, last_block.link))
+            idx, last_block = optional.pop()
+            assert (
+                last_block.link is not None
+            ), "Block in optional_blocks is missing its link"
+            entries[idx] = TableEntry.from_link(last_block.link)
 
-    # Build the heap
-    all_heap.sort(key=lambda x: x.heap_offset or 0)
+    block = build_table(entries, heap_size)
+    return store.store(block.encode(), limit=len(block.vtable), alignment=max_align)
 
-    heap = bytearray()
-    for entry in all_heap:
-        assert entry.heap_offset is not None, "Heap entry must have an offset"
-        pad_needed = entry.heap_offset - (heap_start + len(heap))
-        if pad_needed > 0:
-            heap.extend(b"\x00" * pad_needed)
-        heap.extend(entry.data)
 
-        vtable[entry.vt_index] = VTableEntry(entry.entry_type, entry.heap_offset)
-        max_align = max(max_align, entry.alignment)
+def build_table(entries: list[TableEntry], heap_size: int) -> TableBlock:
+    """Build a TABLE block from a list of TableEntry objects.
 
-    block = TableBlock.build(vtable, bytes(heap))
-    return store.store(block.encode(), limit=entry_count, alignment=max_align)
+    Input is a HeapEntry list with placement and ordering already resolved -- that is,
+    all NULL entries must be part of the `entries` list.
+
+    Generates the heap bytes and the vtable, and returns the TABLE block.
+    """
+    heap_start = 4 + 2 * len(entries)
+    vtable = []
+    heap = bytearray(heap_size)
+    for entry in entries:
+        vtable.append(entry.place(heap, heap_start))
+    return TableBlock.build(vtable, bytes(heap))

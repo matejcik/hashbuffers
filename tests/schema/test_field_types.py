@@ -1,7 +1,6 @@
 """Tests for primitive type encoding: signed/unsigned edges, floats, inline boundaries."""
 
 import math
-import struct
 
 import pytest
 

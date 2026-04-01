@@ -1,7 +1,5 @@
 """Tests for variable-length arrays of all element types."""
 
-import pytest
-
 from hashbuffers.schema import (
     U16,
     U32,

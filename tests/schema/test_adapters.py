@@ -138,6 +138,15 @@ class TestBoolAdapter:
             flag: bool | None = Field(0, Bool)
 
         obj = WithBool(flag=False)
+        encoded = obj.encode(store)
+        from hashbuffers import codec
+
+        block = codec.decode_block(encoded.data)
+        assert isinstance(block, codec.TableBlock)
+        assert len(block.vtable) == 1
+        assert block.vtable[0].type == codec.VTableEntryType.INLINE
+        assert block.vtable[0].offset == 0
+        assert block.get_int(0, 1) == 0
         decoded = WithBool.decode(obj.encode(store).data, store)
         assert decoded.flag is False
 

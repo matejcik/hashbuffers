@@ -1,10 +1,8 @@
 """Tests for HashBuffer struct fundamentals."""
 
-import math
-
 import pytest
 
-from hashbuffers.codec import TableBlock, VTableEntry, VTableEntryType
+from hashbuffers.codec import TableBlock, VTableEntryType
 from hashbuffers.schema import (
     F64,
     I64,

@@ -552,7 +552,7 @@ class LinksBlock(Block):
         return 4 + 36 * len(self.links)
 
     @classmethod
-    def build(cls, links: list[Link]) -> "LinksBlock":
+    def build(cls, links: list[Link]) -> t.Self:
         size = 4 + 36 * len(links)
         if size > SIZE_MAX:
             raise ValueError(f"Links block exceeds {SIZE_MAX} bytes (size: {size})")

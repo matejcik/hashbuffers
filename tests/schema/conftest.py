@@ -3,19 +3,14 @@
 import pytest
 
 from hashbuffers.schema import (
-    F32,
-    F64,
     I16,
-    I64,
     U8,
     U16,
     U32,
     Array,
-    Bool,
     Bytes,
     Field,
     HashBuffer,
-    Primitive,
 )
 from hashbuffers.store import BlockStore
 

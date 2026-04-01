@@ -4,7 +4,6 @@ import pytest
 
 from hashbuffers.schema import (
     U16,
-    U32,
     Array,
     Field,
     HashBuffer,
