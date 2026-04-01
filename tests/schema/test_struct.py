@@ -160,6 +160,16 @@ class TestRequired:
         assert decoded.name == b"ok"
         assert decoded.value == 99
 
+    def test_decode_missing_required(self, store):
+        class OptionalStruct(HashBuffer):
+            name: bytes | None = Field(0, Bytes, required=True)
+            value: int | None = Field(1, U16)
+
+        obj = OptionalStruct(name=b"hello")
+        encoded = obj.encode(store)
+        with pytest.raises(ValueError, match="Required field"):
+            RequiredStruct.decode(encoded.data, store)
+
 
 # --- Equality and repr ---
 
@@ -253,15 +263,11 @@ class TestKitchenSink:
 # --- Duplicate field index ---
 
 
-class TestDuplicateIndex:
-    def test_duplicate_index_last_wins(self, store):
-        """Two fields mapping to the same index: last descriptor wins on encode."""
+def test_duplicate_index(store):
+    """Two fields mapping to the same index."""
+
+    with pytest.raises(ValueError, match="Duplicate field index"):
 
         class Dupe(HashBuffer):
             a: int | None = Field(0, U8)
             b: int | None = Field(0, U16)  # same index!
-
-        obj = Dupe(a=1, b=2)
-        sb = obj.encode(store)
-        table = TableBlock.decode(sb.data)
-        assert len(table.vtable) == 1

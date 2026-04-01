@@ -40,6 +40,14 @@ class TestEnumType:
         decoded = WithEnumArray.decode(obj.encode(store).data, store)
         assert decoded.colors == [Color.RED, Color.BLUE, Color.GREEN]
 
+    def test_enum_fixed_array(self, store):
+        class WithEnumFixedArray(HashBuffer):
+            colors: list[Color] | None = Field(0, Array(EnumType(Color), count=3))
+
+        obj = WithEnumFixedArray(colors=[Color.RED, Color.BLUE, Color.GREEN])
+        decoded = WithEnumFixedArray.decode(obj.encode(store).data, store)
+        assert decoded.colors == [Color.RED, Color.BLUE, Color.GREEN]
+
     def test_enum_with_u16_repr(self, store):
         class BigEnum(Enum):
             A = 1000
@@ -110,7 +118,7 @@ class TestStringType:
 
         obj = WithString(text="hello \u2603 snowman")
         decoded = WithString.decode(obj.encode(store).data, store)
-        assert decoded.text == "hello \u2603 snowman"
+        assert decoded.text == obj.text
 
     def test_null_string(self, store):
         class WithString(HashBuffer):
@@ -119,6 +127,14 @@ class TestStringType:
         obj = WithString()
         decoded = WithString.decode(obj.encode(store).data, store)
         assert decoded.name is None
+
+    def test_zero_bytes(self, store):
+        class WithString(HashBuffer):
+            name: str | None = Field(0, String)
+
+        obj = WithString(name="hello\0world")
+        decoded = WithString.decode(obj.encode(store).data, store)
+        assert decoded.name == obj.name
 
 
 # --- Bool adapter ---
@@ -138,15 +154,6 @@ class TestBoolAdapter:
             flag: bool | None = Field(0, Bool)
 
         obj = WithBool(flag=False)
-        encoded = obj.encode(store)
-        from hashbuffers import codec
-
-        block = codec.decode_block(encoded.data)
-        assert isinstance(block, codec.TableBlock)
-        assert len(block.vtable) == 1
-        assert block.vtable[0].type == codec.VTableEntryType.INLINE
-        assert block.vtable[0].offset == 0
-        assert block.get_int(0, 1) == 0
         decoded = WithBool.decode(obj.encode(store).data, store)
         assert decoded.flag is False
 

@@ -54,24 +54,27 @@ class TestDecodeErrors:
             VTableEntry(VTableEntryType.NULL, 0),
         ]
         table = TableBlock.build(vtable, link_bytes)
+        encoded = table.encode()
         with pytest.raises(KeyError):
-            Outer.decode(table.encode(), store)
+            Outer.decode(encoded, store)
 
     def test_corrupted_nested_block(self, store):
         """Nested BLOCK with garbage data should fail validation."""
         garbage = b"\xff" * 20
         vtable = [VTableEntry(VTableEntryType.BLOCK, 6)]
         table = TableBlock.build(vtable, garbage)
+        encoded = table._encode_without_validation()
         with pytest.raises((ValueError, IOError)):
-            Outer.decode(table.encode(), store)
+            Outer.decode(encoded, store)
 
     def test_slots_where_data_expected(self, store):
         """A SLOTS block where a DATA array is expected should fail."""
         slots = SlotsBlock.build_slots([b"wrong"]).encode()
         vtable = [VTableEntry(VTableEntryType.BLOCK, 6)]
         table = TableBlock.build(vtable, slots)
+        encoded = table.encode()
         with pytest.raises(ValueError, match="Expected DATA leaf"):
-            ArrayStruct.decode(table.encode(), store)
+            ArrayStruct.decode(encoded, store)
 
     def test_required_field_null_in_table(self, store):
         """Required field explicitly NULL should raise."""
@@ -80,15 +83,17 @@ class TestDecodeErrors:
             VTableEntry(VTableEntryType.INLINE, 42),  # value
         ]
         table = TableBlock.build(vtable, b"")
+        encoded = table.encode()
         with pytest.raises(ValueError, match="Required field"):
-            RequiredStruct.decode(table.encode(), store)
+            RequiredStruct.decode(encoded, store)
 
     def test_required_field_missing_from_short_table(self, store):
         """Required field missing from a short TABLE should raise."""
         vtable = []
         table = TableBlock.build(vtable, b"")
+        encoded = table.encode()
         with pytest.raises(ValueError, match="Required field"):
-            RequiredStruct.decode(table.encode(), store)
+            RequiredStruct.decode(encoded, store)
 
 
 class TestDecodeForwardCompat:

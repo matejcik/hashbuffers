@@ -537,8 +537,15 @@ class HashBuffer:
     def __init_subclass__(cls, **kwargs: t.Any) -> None:
         super().__init_subclass__(**kwargs)
         fields: dict[str, Field] = {}
+        seen_indices: dict[int, str] = {}
         for attr_name, attr_value in cls.__dict__.items():
             if isinstance(attr_value, Field):
+                if attr_value.index in seen_indices:
+                    raise ValueError(
+                        f"Duplicate field index {attr_value.index}: "
+                        f"fields '{seen_indices[attr_value.index]}' and '{attr_name}'"
+                    )
+                seen_indices[attr_value.index] = attr_name
                 fields[attr_name] = attr_value
         cls._hb_fields = fields
         cls._hb_max_index = max(f.index for f in fields.values()) + 1 if fields else 0

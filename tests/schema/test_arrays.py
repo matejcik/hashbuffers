@@ -128,33 +128,6 @@ class TestArrayOfStructArrays:
         assert decoded.rows[2].cells == []
 
 
-# --- Nested bytes arrays (struct containing Array(Bytes)) ---
-
-
-class Document(HashBuffer):
-    title: bytes | None = Field(0, Bytes)
-    pages: list[bytes] | None = Field(1, Array(Bytes))
-
-
-class Library(HashBuffer):
-    docs: list[Document] | None = Field(0, Array(Document))
-
-
-class TestNestedBytesArrays:
-    def test_library_roundtrip(self, store):
-        docs = [
-            Document(title=b"Book A", pages=[b"page1", b"page2"]),
-            Document(title=b"Book B", pages=[b"single page"]),
-        ]
-        obj = Library(docs=docs)
-        decoded = Library.decode(obj.encode(store).data, store)
-        assert decoded.docs is not None
-        assert len(decoded.docs) == 2
-        assert decoded.docs[0].title == b"Book A"
-        assert decoded.docs[0].pages == [b"page1", b"page2"]
-        assert decoded.docs[1].pages == [b"single page"]
-
-
 # --- Array of arrays (no wrapper structs) ---
 
 
@@ -184,6 +157,7 @@ class TestArrayOfArrays:
         obj = VarOfVar(arrays=[[] for _ in range(5)])
         decoded = VarOfVar.decode(obj.encode(store).data, store)
         assert decoded.arrays is not None
+        assert len(decoded.arrays) == 5
         assert all(a == [] for a in decoded.arrays)
 
     def test_nested_bytes_arrays(self, store):

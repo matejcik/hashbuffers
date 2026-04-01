@@ -141,9 +141,7 @@ class TestFloatEdges:
 
 
 class TestOutOfRange:
-    def test_u8_large_value_goes_direct_and_overflows(self, store):
-        """U8 value >8191 forces DIRECT path where to_bytes raises."""
-
+    def test_u8_large_value(self, store):
         class S(HashBuffer):
             v: int | None = Field(0, U8)
 
@@ -151,27 +149,22 @@ class TestOutOfRange:
             S(v=0x1_0000).encode(store)
 
     def test_u8_negative(self, store):
-        """Negative value for unsigned type overflows on DIRECT path."""
+        """Negative value for unsigned type overflows."""
 
         class S(HashBuffer):
             v: int | None = Field(0, U8)
 
-        # -1 is signed, doesn't fit unsigned inline, goes DIRECT → OverflowError
         with pytest.raises(OverflowError):
             S(v=-1).encode(store)
 
-    def test_i8_large_positive_goes_direct_and_overflows(self, store):
-        """I8 value >4095 forces DIRECT path where to_bytes raises."""
-
+    def test_i8_large_positive(self, store):
         class S(HashBuffer):
             v: int | None = Field(0, I8)
 
         with pytest.raises(OverflowError):
             S(v=0x1_0000).encode(store)
 
-    def test_i8_large_negative_goes_direct_and_overflows(self, store):
-        """I8 value < -4096 forces DIRECT path where to_bytes raises."""
-
+    def test_i8_large_negative(self, store):
         class S(HashBuffer):
             v: int | None = Field(0, I8)
 
