@@ -7,15 +7,6 @@ from os import SEEK_CUR
 SIZE_MAX = 0x1FFF  # 8191
 
 
-class Encodable(t.Protocol):
-    def encode(self) -> bytes: ...
-
-
-class Decodable(t.Protocol):
-    @classmethod
-    def decode(cls, data: bytes) -> t.Self: ...
-
-
 class Reader(BytesIO):
     def __init__(self, data: bytes | bytearray | memoryview):
         super().__init__(data)
@@ -159,12 +150,11 @@ class Link:
     SIZE: t.ClassVar[int] = 36
 
     @classmethod
-    def decode(cls, data: bytes, exact: bool = True) -> t.Self:
+    def decode(cls, data: bytes) -> t.Self:
         r = Reader(data)
         digest = r.read_exact(32)
         limit = r.read_uint(4)
-        if exact:
-            r.done()
+        r.done()
         return cls(digest, limit)
 
     def encode(self) -> bytes:
@@ -264,7 +254,7 @@ class TableBlock(Block):
 
     def _get_link(self, offset: int) -> Link:
         data = self.get_heap_data(offset)
-        return Link.decode(data, exact=False)
+        return Link.decode(data[: Link.SIZE])
 
     def _encode_without_validation(self) -> bytes:
         w = self._start_encode()
@@ -404,7 +394,7 @@ class DataBlock(Block):
         return (elem_size + align - 1) & ~(align - 1)
 
     @classmethod
-    def build_array(cls, data: list[bytes], *, align: int = 1) -> t.Self:
+    def build_array(cls, data: t.Sequence[bytes], *, align: int = 1) -> t.Self:
         if not data:
             return cls.build(b"", align=align)
         if not all(len(elem) == len(data[0]) for elem in data):
@@ -490,6 +480,9 @@ class SlotsBlock(Block):
         start = self.offsets[index]
         end = self.offsets[index + 1]
         return self.heap[start - heap_start : end - heap_start]
+
+    def get_entries(self) -> list[bytes]:
+        return [self.get_entry(i) for i in range(self.element_count)]
 
     def _encode_without_validation(self) -> bytes:
         w = self._start_encode()
