@@ -92,11 +92,6 @@ class TestLinkTreeFindLeaf:
         assert idx == 2
         assert_leaf_data(block, b"abc")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUG: find_leaf uses bisect_left but should use bisect_right; "
-        "when index equals a cumulative limit, it routes to the wrong child",
-    )
     def test_single_level_boundary(self, store: BlockStore) -> None:
         """Index exactly at a cumulative limit boundary should go to the next child."""
         leaf1 = data_leaf(b"abc")  # elements [0, 3)
@@ -128,11 +123,6 @@ class TestLinkTreeFindLeaf:
         assert idx == 1
         assert_leaf_data(block, b"cd")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUG: find_leaf uses bisect_left but should use bisect_right; "
-        "index at cumulative limit boundary routes to wrong child",
-    )
     def test_two_level_boundary(self, store: BlockStore) -> None:
         """Index at the boundary between two inner groups."""
         leaves1 = [data_leaf(b"ab"), data_leaf(b"cd")]  # 4 elements total

@@ -44,11 +44,6 @@ class TestDataArrayGetitem:
         arr = make_data_array(store, [10, 20, 30])
         assert arr[:] == [10, 20, 30]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUG: collect_leaves returns (range_start, [root]) for single-leaf trees "
-        "instead of (0, [root]), causing wrong slice offsets",
-    )
     def test_partial_slice_single_leaf(self, store):
         """Partial slice on a single-leaf array should return the correct sub-range."""
         arr = make_data_array(store, [10, 20, 30, 40, 50])

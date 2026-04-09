@@ -58,12 +58,6 @@ class TestBytestringArrayOversized:
         assert len(arr) == 1
         assert arr[0] == big
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUG: mixed regular + oversized elements in BytestringArray causes "
-        "IndexError when indexing; heterogeneous leaf types (SLOTS vs TABLE) "
-        "confuse LinkTree element counting",
-    )
     def test_mixed_regular_and_oversized(self, store):
         """Mix of regular and oversized elements should all be accessible."""
         big = b"x" * (SIZE_MAX + 100)

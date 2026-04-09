@@ -113,11 +113,6 @@ class TestBuildBytestringArray:
         arr = BytestringArray(entry.block, store)
         assert arr[0] == big
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUG: bisect_left boundary bug in LinkTree.find_leaf — elements at "
-        "cumulative limit boundaries get routed to wrong child",
-    )
     def test_block_overflow_seals_current(self, store):
         """Elements that collectively overflow a SLOTS block should produce multiple blocks."""
         # Fill near block capacity to force multiple SLOTS blocks

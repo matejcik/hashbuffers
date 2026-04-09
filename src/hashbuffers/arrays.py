@@ -69,7 +69,7 @@ class LinkTree:
                 )
 
             # binary-search the index of the link that contains the element
-            i = bisect.bisect_left(node.links, relative_index, key=lambda l: l.limit)
+            i = bisect.bisect_right(node.links, relative_index, key=lambda l: l.limit)
             link = node.links[i]
             # find the previous link's limit
             prev_limit = node.links[i - 1].limit if i > 0 else 0
@@ -97,7 +97,7 @@ class LinkTree:
             return range_start, []
 
         if not isinstance(self.root, LinksBlock):
-            return range_start, [self.root]
+            return 0, [self.root]
 
         leaves: list[Block] = []
 
