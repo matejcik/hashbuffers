@@ -1,5 +1,7 @@
 """Shared fixtures and schema classes for schema tests."""
 
+import typing as t
+
 import pytest
 
 from hashbuffers.schema import (
@@ -43,7 +45,7 @@ class Item(HashBuffer):
 
 
 class Container(HashBuffer):
-    items: list[Item] | None = Field(0, Array(Item))
+    items: t.Sequence[Item] | None = Field(0, Array(Item))
 
 
 class RequiredStruct(HashBuffer):
@@ -52,7 +54,7 @@ class RequiredStruct(HashBuffer):
 
 
 class ArrayStruct(HashBuffer):
-    values: list[int] | None = Field(0, Array(U32))
+    values: t.Sequence[int] | None = Field(0, Array(U32))
 
 
 class BlobStruct(HashBuffer):
@@ -60,14 +62,14 @@ class BlobStruct(HashBuffer):
 
 
 class StringsStruct(HashBuffer):
-    strings: list[bytes] | None = Field(0, Array(Bytes))
+    strings: t.Sequence[bytes] | None = Field(0, Array(Bytes))
 
 
 class AllOptional(HashBuffer):
     a: int | None = Field(0, U32)
     b: bytes | None = Field(1, Bytes)
-    c: list[int] | None = Field(2, Array(U8))
-    d: list[bytes] | None = Field(3, Array(Bytes))
+    c: t.Sequence[int] | None = Field(2, Array(U8))
+    d: t.Sequence[bytes] | None = Field(3, Array(Bytes))
 
 
 Vec3 = Array(U32, count=3)

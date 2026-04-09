@@ -1,6 +1,7 @@
 """Tests for adapter types: Bool, String, EnumType."""
 
-from enum import Enum
+import typing as t
+from enum import IntEnum
 
 import pytest
 
@@ -14,10 +15,10 @@ from hashbuffers.schema import (
     String,
 )
 
-# --- Enum support ---
+# --- IntEnum support ---
 
 
-class Color(Enum):
+class Color(IntEnum):
     RED = 0
     GREEN = 1
     BLUE = 2
@@ -29,27 +30,27 @@ class TestEnumType:
             color: Color | None = Field(0, EnumType(Color))
 
         obj = WithEnum(color=Color.GREEN)
-        decoded = WithEnum.decode(obj.encode(store).data, store)
+        decoded = WithEnum.decode(obj.encode(store), store)
         assert decoded.color is Color.GREEN
 
     def test_enum_array(self, store):
         class WithEnumArray(HashBuffer):
-            colors: list[Color] | None = Field(0, Array(EnumType(Color)))
+            colors: t.Sequence[Color] | None = Field(0, Array(EnumType(Color)))
 
         obj = WithEnumArray(colors=[Color.RED, Color.BLUE, Color.GREEN])
-        decoded = WithEnumArray.decode(obj.encode(store).data, store)
+        decoded = WithEnumArray.decode(obj.encode(store), store)
         assert decoded.colors == [Color.RED, Color.BLUE, Color.GREEN]
 
     def test_enum_fixed_array(self, store):
         class WithEnumFixedArray(HashBuffer):
-            colors: list[Color] | None = Field(0, Array(EnumType(Color), count=3))
+            colors: t.Sequence[Color] | None = Field(0, Array(EnumType(Color), count=3))
 
         obj = WithEnumFixedArray(colors=[Color.RED, Color.BLUE, Color.GREEN])
-        decoded = WithEnumFixedArray.decode(obj.encode(store).data, store)
+        decoded = WithEnumFixedArray.decode(obj.encode(store), store)
         assert decoded.colors == [Color.RED, Color.BLUE, Color.GREEN]
 
     def test_enum_with_u16_repr(self, store):
-        class BigEnum(Enum):
+        class BigEnum(IntEnum):
             A = 1000
             B = 2000
 
@@ -57,7 +58,7 @@ class TestEnumType:
             val: BigEnum | None = Field(0, EnumType(BigEnum, repr=U16))
 
         obj = WithBigEnum(val=BigEnum.B)
-        decoded = WithBigEnum.decode(obj.encode(store).data, store)
+        decoded = WithBigEnum.decode(obj.encode(store), store)
         assert decoded.val is BigEnum.B
 
     def test_null_enum(self, store):
@@ -65,7 +66,7 @@ class TestEnumType:
             color: Color | None = Field(0, EnumType(Color))
 
         obj = WithEnum()
-        decoded = WithEnum.decode(obj.encode(store).data, store)
+        decoded = WithEnum.decode(obj.encode(store), store)
         assert decoded.color is None
 
     def test_invalid_enum_value_on_decode(self, store):
@@ -81,7 +82,7 @@ class TestEnumType:
 
         sb = RawStruct(color=99).encode(store)
         with pytest.raises(ValueError):
-            WithEnum.decode(sb.data, store)
+            WithEnum.decode(sb, store)
 
 
 # --- String type ---
@@ -93,7 +94,7 @@ class TestStringType:
             name: str | None = Field(0, String)
 
         obj = WithString(name="hello world")
-        decoded = WithString.decode(obj.encode(store).data, store)
+        decoded = WithString.decode(obj.encode(store), store)
         assert decoded.name == "hello world"
 
     def test_empty_string(self, store):
@@ -101,15 +102,15 @@ class TestStringType:
             name: str | None = Field(0, String)
 
         obj = WithString(name="")
-        decoded = WithString.decode(obj.encode(store).data, store)
+        decoded = WithString.decode(obj.encode(store), store)
         assert decoded.name == ""
 
     def test_string_array(self, store):
         class WithStringArray(HashBuffer):
-            names: list[str] | None = Field(0, Array(String))
+            names: t.Sequence[str] | None = Field(0, Array(String))
 
         obj = WithStringArray(names=["alice", "bob", "charlie"])
-        decoded = WithStringArray.decode(obj.encode(store).data, store)
+        decoded = WithStringArray.decode(obj.encode(store), store)
         assert decoded.names == ["alice", "bob", "charlie"]
 
     def test_unicode(self, store):
@@ -117,7 +118,7 @@ class TestStringType:
             text: str | None = Field(0, String)
 
         obj = WithString(text="hello \u2603 snowman")
-        decoded = WithString.decode(obj.encode(store).data, store)
+        decoded = WithString.decode(obj.encode(store), store)
         assert decoded.text == obj.text
 
     def test_null_string(self, store):
@@ -125,7 +126,7 @@ class TestStringType:
             name: str | None = Field(0, String)
 
         obj = WithString()
-        decoded = WithString.decode(obj.encode(store).data, store)
+        decoded = WithString.decode(obj.encode(store), store)
         assert decoded.name is None
 
     def test_zero_bytes(self, store):
@@ -133,7 +134,7 @@ class TestStringType:
             name: str | None = Field(0, String)
 
         obj = WithString(name="hello\0world")
-        decoded = WithString.decode(obj.encode(store).data, store)
+        decoded = WithString.decode(obj.encode(store), store)
         assert decoded.name == obj.name
 
 
@@ -146,7 +147,7 @@ class TestBoolAdapter:
             flag: bool | None = Field(0, Bool)
 
         obj = WithBool(flag=True)
-        decoded = WithBool.decode(obj.encode(store).data, store)
+        decoded = WithBool.decode(obj.encode(store), store)
         assert decoded.flag is True
 
     def test_false(self, store):
@@ -154,13 +155,13 @@ class TestBoolAdapter:
             flag: bool | None = Field(0, Bool)
 
         obj = WithBool(flag=False)
-        decoded = WithBool.decode(obj.encode(store).data, store)
+        decoded = WithBool.decode(obj.encode(store), store)
         assert decoded.flag is False
 
     def test_bool_array(self, store):
         class WithBoolArray(HashBuffer):
-            flags: list[bool] | None = Field(0, Array(Bool))
+            flags: t.Sequence[bool] | None = Field(0, Array(Bool))
 
         obj = WithBoolArray(flags=[True, False, True, True])
-        decoded = WithBoolArray.decode(obj.encode(store).data, store)
+        decoded = WithBoolArray.decode(obj.encode(store), store)
         assert decoded.flags == [True, False, True, True]

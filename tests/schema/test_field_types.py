@@ -45,30 +45,30 @@ class FloatStruct(HashBuffer):
 class TestSignedEdgeCases:
     def test_i8_extremes(self, store):
         obj = SignedEdges(i8_min=-128, i8_max=127)
-        decoded = SignedEdges.decode(obj.encode(store).data, store)
+        decoded = SignedEdges.decode(obj.encode(store), store)
         assert decoded.i8_min == -128
         assert decoded.i8_max == 127
 
     def test_i16_min(self, store):
         obj = SignedEdges(i16_min=-32768)
-        decoded = SignedEdges.decode(obj.encode(store).data, store)
+        decoded = SignedEdges.decode(obj.encode(store), store)
         assert decoded.i16_min == -32768
 
     def test_i64_large_negative(self, store):
         obj = SignedEdges(i64_big=-(2**63))
-        decoded = SignedEdges.decode(obj.encode(store).data, store)
+        decoded = SignedEdges.decode(obj.encode(store), store)
         assert decoded.i64_big == -(2**63)
 
     def test_inline_boundary_signed(self, store):
         """I16 value -4096 fits inline (13-bit two's complement), -4097 does not."""
         obj = SignedEdges(i16_min=-4096)
         sb = obj.encode(store)
-        table = TableBlock.decode(sb.data)
+        table = TableBlock.decode(sb)
         assert table.vtable[2].type == VTableEntryType.INLINE
 
         obj2 = SignedEdges(i16_min=-4097)
         sb2 = obj2.encode(store)
-        table2 = TableBlock.decode(sb2.data)
+        table2 = TableBlock.decode(sb2)
         assert table2.vtable[2].type == VTableEntryType.DIRECT
 
 
@@ -78,24 +78,24 @@ class TestSignedEdgeCases:
 class TestUnsignedEdgeCases:
     def test_u8_255(self, store):
         obj = UnsignedEdges(u8_max=255)
-        decoded = UnsignedEdges.decode(obj.encode(store).data, store)
+        decoded = UnsignedEdges.decode(obj.encode(store), store)
         assert decoded.u8_max == 255
 
     def test_u64_max(self, store):
         obj = UnsignedEdges(u64_max=2**64 - 1)
-        decoded = UnsignedEdges.decode(obj.encode(store).data, store)
+        decoded = UnsignedEdges.decode(obj.encode(store), store)
         assert decoded.u64_max == 2**64 - 1
 
     def test_inline_boundary_unsigned(self, store):
         """U16 value 8191 fits inline, 8192 does not."""
         obj = UnsignedEdges(inline_boundary=8191)
         sb = obj.encode(store)
-        table = TableBlock.decode(sb.data)
+        table = TableBlock.decode(sb)
         assert table.vtable[2].type == VTableEntryType.INLINE
 
         obj2 = UnsignedEdges(inline_boundary=8192)
         sb2 = obj2.encode(store)
-        table2 = TableBlock.decode(sb2.data)
+        table2 = TableBlock.decode(sb2)
         assert table2.vtable[2].type == VTableEntryType.DIRECT
 
 
@@ -105,34 +105,34 @@ class TestUnsignedEdgeCases:
 class TestFloatEdges:
     def test_f64_roundtrip(self, store):
         obj = FloatStruct(f64_val=3.14159265358979)
-        decoded = FloatStruct.decode(obj.encode(store).data, store)
+        decoded = FloatStruct.decode(obj.encode(store), store)
         assert decoded.f64_val == pytest.approx(3.14159265358979)
 
     def test_f32_roundtrip(self, store):
         obj = FloatStruct(f32_val=2.5)
-        decoded = FloatStruct.decode(obj.encode(store).data, store)
+        decoded = FloatStruct.decode(obj.encode(store), store)
         assert decoded.f32_val == pytest.approx(2.5)
 
     def test_negative_zero(self, store):
         obj = FloatStruct(f64_val=-0.0)
-        decoded = FloatStruct.decode(obj.encode(store).data, store)
+        decoded = FloatStruct.decode(obj.encode(store), store)
         assert decoded.f64_val is not None
         assert decoded.f64_val == 0.0
         assert math.copysign(1, decoded.f64_val) == -1.0
 
     def test_infinity(self, store):
         obj = FloatStruct(f64_val=float("inf"))
-        decoded = FloatStruct.decode(obj.encode(store).data, store)
+        decoded = FloatStruct.decode(obj.encode(store), store)
         assert decoded.f64_val == float("inf")
 
     def test_negative_infinity(self, store):
         obj = FloatStruct(f64_val=float("-inf"))
-        decoded = FloatStruct.decode(obj.encode(store).data, store)
+        decoded = FloatStruct.decode(obj.encode(store), store)
         assert decoded.f64_val == float("-inf")
 
     def test_nan(self, store):
         obj = FloatStruct(f64_val=float("nan"))
-        decoded = FloatStruct.decode(obj.encode(store).data, store)
+        decoded = FloatStruct.decode(obj.encode(store), store)
         assert decoded.f64_val is not None
         assert math.isnan(decoded.f64_val)
 

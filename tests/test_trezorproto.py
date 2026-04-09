@@ -1,7 +1,5 @@
 """Tests for trezorproto bridge: protobuf MessageType <-> Hashbuffers."""
 
-# pyright: reportAttributeAccessIssue=false
-
 import pytest
 from trezorlib import messages
 
@@ -17,29 +15,29 @@ def store():
 class TestSimpleMessages:
     def test_success_roundtrip(self, store):
         msg = messages.Success(message="Operation successful")
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.Success, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.Success, data, store)
         assert decoded.message == "Operation successful"
 
     def test_success_default(self, store):
         msg = messages.Success()
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.Success, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.Success, data, store)
         assert decoded.message == ""
 
     def test_failure_roundtrip(self, store):
         msg = messages.Failure(
             code=messages.FailureType.DataError, message="Data error"
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.Failure, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.Failure, data, store)
         assert decoded.code == messages.FailureType.DataError
         assert decoded.message == "Data error"
 
     def test_failure_null_fields(self, store):
         msg = messages.Failure()
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.Failure, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.Failure, data, store)
         assert decoded.code is None
         assert decoded.message is None
 
@@ -47,22 +45,22 @@ class TestSimpleMessages:
 class TestBytesFields:
     def test_bytes_roundtrip(self, store):
         msg = messages.Entropy(entropy=b"\xde\xad\xbe\xef" * 8)
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.Entropy, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.Entropy, data, store)
         assert decoded.entropy == b"\xde\xad\xbe\xef" * 8
 
     def test_empty_bytes(self, store):
         msg = messages.Entropy(entropy=b"")
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.Entropy, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.Entropy, data, store)
         assert decoded.entropy == b""
 
 
 class TestEnumFields:
     def test_enum_roundtrip(self, store):
         msg = messages.Failure(code=messages.FailureType.ActionCancelled)
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.Failure, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.Failure, data, store)
         assert decoded.code == messages.FailureType.ActionCancelled
 
     def test_enum_zero_value(self, store):
@@ -72,8 +70,8 @@ class TestEnumFields:
             inputs_count=1,
             amount_unit=messages.AmountUnit.BITCOIN,  # value 0
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.SignTx, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.SignTx, data, store)
         assert decoded.amount_unit == messages.AmountUnit.BITCOIN
 
 
@@ -85,15 +83,15 @@ class TestBoolFields:
             serialize=False,
             decred_staking_ticket=True,
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.SignTx, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.SignTx, data, store)
         assert decoded.serialize is False
         assert decoded.decred_staking_ticket is True
 
     def test_bool_default(self, store):
         msg = messages.SignTx(outputs_count=1, inputs_count=1)
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.SignTx, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.SignTx, data, store)
         assert decoded.serialize is True
         assert decoded.decred_staking_ticket is False
 
@@ -104,22 +102,22 @@ class TestLargeIntegers:
             outputs_count=0xDEADBEEF,
             inputs_count=1,
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.SignTx, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.SignTx, data, store)
         assert decoded.outputs_count == 0xDEADBEEF
 
 
 class TestRepeatedFields:
     def test_repeated_strings(self, store):
         msg = messages.BenchmarkNames(names=["alpha", "beta", "gamma"])
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.BenchmarkNames, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.BenchmarkNames, data, store)
         assert decoded.names == ["alpha", "beta", "gamma"]
 
     def test_empty_repeated(self, store):
         msg = messages.BenchmarkNames()
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.BenchmarkNames, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.BenchmarkNames, data, store)
         assert decoded.names == []
 
     def test_repeated_ints(self, store):
@@ -129,8 +127,8 @@ class TestRepeatedFields:
             prev_index=0,
             amount=100000,
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.TxInput, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.TxInput, data, store)
         assert decoded.address_n == [44, 0, 0, 0, 0]
 
 
@@ -142,16 +140,16 @@ class TestNestedMessages:
                 lock_time=500000,
             )
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.TxAck, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.TxAck, data, store)
         assert decoded.tx is not None
         assert decoded.tx.version == 2
         assert decoded.tx.lock_time == 500000
 
     def test_nested_null(self, store):
         msg = messages.TxAck()
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.TxAck, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.TxAck, data, store)
         assert decoded.tx is None
 
 
@@ -167,8 +165,8 @@ class TestSignTx:
             decred_staking_ticket=False,
             serialize=True,
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.SignTx, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.SignTx, data, store)
         assert decoded.outputs_count == 5
         assert decoded.inputs_count == 3
         assert decoded.coin_name == "Litecoin"
@@ -190,8 +188,8 @@ class TestTxInput:
             script_type=messages.InputScriptType.SPENDWITNESS,
             amount=100000,
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.TxInput, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.TxInput, data, store)
         assert decoded.address_n == [44, 0, 0, 0, 0]
         assert decoded.prev_hash == b"\xab" * 32
         assert decoded.prev_index == 0
@@ -206,8 +204,8 @@ class TestTxInput:
             prev_index=0,
             amount=0,
         )
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.TxInput, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.TxInput, data, store)
         assert decoded.sequence == 4294967295
         assert decoded.script_type == messages.InputScriptType.SPENDADDRESS
         assert decoded.coinjoin_flags == 0
@@ -216,6 +214,6 @@ class TestTxInput:
 class TestEmptyMessage:
     def test_empty_roundtrip(self, store):
         msg = messages.BenchmarkListNames()
-        sb = serialize(msg, store)
-        decoded = deserialize(messages.BenchmarkListNames, sb.data, store)
+        data = serialize(msg, store)
+        decoded = deserialize(messages.BenchmarkListNames, data, store)
         assert isinstance(decoded, messages.BenchmarkListNames)

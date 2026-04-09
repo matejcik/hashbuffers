@@ -13,10 +13,11 @@ from ..arrays import (
     build_table_array,
 )
 from ..codec import SIZE_MAX, Block, DataBlock, Link, TableBlock, VTableEntryType
-from ..fitting import BlockEntry, DirectEntry, TableEntry
+from ..fitting import DirectEntry, TableEntry
 from ..store import BlockStore
 from ..util import pack_flat_array, padded_element_size, unpack_flat_array
 from .abc import BlockDecoderType, FieldType, FixedFieldType
+from .adapter import AdapterCodec
 
 T = t.TypeVar("T")
 
@@ -151,16 +152,22 @@ class VarArrayType(BlockDecoderType[t.Sequence[T]]):
         raise NotImplementedError
 
 
-class BytestringArrayType(VarArrayType[bytes]):
-    def __init__(self, count: int | None = None) -> None:
+class BytestringArrayType(VarArrayType[T]):
+    def __init__(
+        self,
+        count: int | None = None,
+        *,
+        adapter: AdapterCodec[T, bytes] = AdapterCodec.identity(),
+    ) -> None:
         super().__init__(count)
+        self.adapter = adapter
 
-    def encode(self, value: t.Sequence[bytes], store: BlockStore) -> TableEntry:
+    def encode(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
         self.check_count(len(value))
-        return build_bytestring_array(value, store)
+        return build_bytestring_array([self.adapter.encode(v) for v in value], store)
 
-    def to_array(self, block: Block, store: BlockStore) -> t.Sequence[bytes]:
-        return BytestringArray(block, store)
+    def to_array(self, block: Block, store: BlockStore) -> t.Sequence[T]:
+        return BytestringArray(block, store, decode_element=self.adapter.decode)
 
 
 class DataArrayType(VarArrayType[T]):

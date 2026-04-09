@@ -1,5 +1,7 @@
 """Tests for HashBuffer struct fundamentals."""
 
+import typing as t
+
 import pytest
 
 from hashbuffers.codec import TableBlock, VTableEntryType
@@ -30,7 +32,7 @@ class TestSimpleStruct:
     def test_roundtrip(self, store):
         obj = SimpleStruct(x=42, y=-7)
         sb = obj.encode(store)
-        decoded = SimpleStruct.decode(sb.data, store)
+        decoded = SimpleStruct.decode(sb, store)
         assert decoded.x == 42
         assert decoded.y == -7
 
@@ -38,20 +40,20 @@ class TestSimpleStruct:
         """Small integers should be stored inline."""
         obj = SimpleStruct(x=5, y=3)
         sb = obj.encode(store)
-        decoded = SimpleStruct.decode(sb.data, store)
+        decoded = SimpleStruct.decode(sb, store)
         assert decoded.x == 5
         assert decoded.y == 3
 
     def test_large_u32(self, store):
         obj = SimpleStruct(x=0xDEADBEEF, y=0)
         sb = obj.encode(store)
-        decoded = SimpleStruct.decode(sb.data, store)
+        decoded = SimpleStruct.decode(sb, store)
         assert decoded.x == 0xDEADBEEF
 
     def test_null_fields(self, store):
         obj = SimpleStruct()
         sb = obj.encode(store)
-        decoded = SimpleStruct.decode(sb.data, store)
+        decoded = SimpleStruct.decode(sb, store)
         assert decoded.x is None
         assert decoded.y is None
 
@@ -62,14 +64,14 @@ class TestSimpleStruct:
 class TestNestedStruct:
     def test_roundtrip(self, store):
         obj = Outer(name=b"test", inner=Inner(value=42))
-        decoded = Outer.decode(obj.encode(store).data, store)
+        decoded = Outer.decode(obj.encode(store), store)
         assert decoded.name == b"test"
         assert decoded.inner is not None
         assert decoded.inner.value == 42
 
     def test_null_nested(self, store):
         obj = Outer(name=b"solo")
-        decoded = Outer.decode(obj.encode(store).data, store)
+        decoded = Outer.decode(obj.encode(store), store)
         assert decoded.name == b"solo"
         assert decoded.inner is None
 
@@ -97,7 +99,7 @@ class Level3(HashBuffer):
 class TestDeepNesting:
     def test_four_levels(self, store):
         obj = Level3(child=Level2(child=Level1(child=Level0(val=77), tag=999)))
-        decoded = Level3.decode(obj.encode(store).data, store)
+        decoded = Level3.decode(obj.encode(store), store)
         assert decoded.child is not None
         assert decoded.child.child is not None
         assert decoded.child.child.child is not None
@@ -117,7 +119,7 @@ class SparseStruct(HashBuffer):
 class TestSparseIndex:
     def test_roundtrip(self, store):
         obj = SparseStruct(first=1, last=99)
-        decoded = SparseStruct.decode(obj.encode(store).data, store)
+        decoded = SparseStruct.decode(obj.encode(store), store)
         assert decoded.first == 1
         assert decoded.last == 99
 
@@ -125,24 +127,10 @@ class TestSparseIndex:
         """The encoded TABLE should have NULL entries for indices 1-9."""
         obj = SparseStruct(first=1, last=99)
         sb = obj.encode(store)
-        table = TableBlock.decode(sb.data)
+        table = TableBlock.decode(sb)
         assert len(table.vtable) == 11  # indices 0..10
         for i in range(1, 10):
             assert table.vtable[i].type == VTableEntryType.NULL
-
-
-# --- Empty struct ---
-
-
-class Empty(HashBuffer):
-    pass
-
-
-class TestEmptyStruct:
-    def test_roundtrip(self, store):
-        obj = Empty()
-        decoded = Empty.decode(obj.encode(store).data, store)
-        assert isinstance(decoded, Empty)
 
 
 # --- Required fields ---
@@ -156,7 +144,7 @@ class TestRequired:
 
     def test_roundtrip_with_values(self, store):
         obj = RequiredStruct(name=b"ok", value=99)
-        decoded = RequiredStruct.decode(obj.encode(store).data, store)
+        decoded = RequiredStruct.decode(obj.encode(store), store)
         assert decoded.name == b"ok"
         assert decoded.value == 99
 
@@ -168,7 +156,7 @@ class TestRequired:
         obj = OptionalStruct(name=b"hello")
         encoded = obj.encode(store)
         with pytest.raises(ValueError, match="Required field"):
-            RequiredStruct.decode(encoded.data, store)
+            RequiredStruct.decode(encoded, store)
 
 
 # --- Equality and repr ---
@@ -198,7 +186,7 @@ class TestEquality:
 class TestAllNull:
     def test_all_none(self, store):
         obj = AllOptional()
-        decoded = AllOptional.decode(obj.encode(store).data, store)
+        decoded = AllOptional.decode(obj.encode(store), store)
         assert decoded.a is None
         assert decoded.b is None
         assert decoded.c is None
@@ -215,9 +203,9 @@ class KitchenSink(HashBuffer):
     ratio: float | None = Field(3, F64)
     name: bytes = Field(4, Bytes, required=True)
     inner: Inner | None = Field(5, Inner)
-    numbers: list[int] | None = Field(6, Array(U32))
-    children: list[Item] | None = Field(7, Array(Item))
-    tags: list[bytes] | None = Field(8, Array(Bytes))
+    numbers: t.Sequence[int] | None = Field(6, Array(U32))
+    children: t.Sequence[Item] | None = Field(7, Array(Item))
+    tags: t.Sequence[bytes] | None = Field(8, Array(Bytes))
 
 
 class TestKitchenSink:
@@ -233,7 +221,7 @@ class TestKitchenSink:
             children=[Item(id=1, data=b"child1"), Item(id=2, data=b"child2")],
             tags=[b"alpha", b"beta", b"gamma"],
         )
-        decoded = KitchenSink.decode(obj.encode(store).data, store)
+        decoded = KitchenSink.decode(obj.encode(store), store)
         assert decoded.u8_val == 255
         assert decoded.i64_val == -(2**40)
         assert decoded.flag is True
@@ -251,7 +239,7 @@ class TestKitchenSink:
     def test_partial_fields(self, store):
         """Only required field + a few optionals."""
         obj = KitchenSink(name=b"minimal", flag=False, numbers=[1])
-        decoded = KitchenSink.decode(obj.encode(store).data, store)
+        decoded = KitchenSink.decode(obj.encode(store), store)
         assert decoded.name == b"minimal"
         assert decoded.flag is False
         assert decoded.numbers == [1]

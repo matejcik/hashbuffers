@@ -235,6 +235,11 @@ class TreeArray(ABC, t.Sequence[T], t.Generic[T, ElemType, EntryType]):
             entries.extend(self.leaf_to_list(leaf))
         return [self.decode_entry(elem) for elem in entries[slice_start:slice_stop]]
 
+    def __eq__(self, other: t.Any) -> bool:
+        if not isinstance(other, t.Sequence):
+            return NotImplemented
+        return all(a == b for a, b in zip(self, other))
+
 
 class DataArray(TreeArray[T, bytes, memoryview]):
     def __init__(

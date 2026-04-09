@@ -13,7 +13,6 @@ from hashbuffers.codec import (
 
 from .conftest import (
     ArrayStruct,
-    Inner,
     Outer,
     RequiredStruct,
     SimpleStruct,
@@ -32,7 +31,7 @@ class TestDecodeErrors:
         obj = SimpleStruct(x=42, y=1)
         sb = obj.encode(store)
         with pytest.raises((ValueError, IOError)):
-            SimpleStruct.decode(sb.data[:4], store)
+            SimpleStruct.decode(sb[:4], store)
 
     def test_reserved_entry_type(self, store):
         """TABLE with a reserved entry type (0b010) should be rejected."""
@@ -54,8 +53,9 @@ class TestDecodeErrors:
         ]
         table = TableBlock.build(vtable, link_bytes)
         encoded = table.encode()
+        decoded = Outer.decode(encoded, store)
         with pytest.raises(KeyError):
-            Outer.decode(encoded, store)
+            _ = decoded.name
 
     def test_corrupted_nested_block(self, store):
         """Nested BLOCK with garbage data should fail validation."""
@@ -122,9 +122,7 @@ class TestDecodeForwardCompat:
 class TestStoreIntegrity:
     def test_tampered_block_in_store(self, store):
         """If a stored block is tampered with, retrieval should fail."""
-        inner = Inner(value=5)
-        sb = inner.encode(store)
-        tampered = StoredBlock(b"\x00" * len(sb.data), sb.link, sb.alignment)
-        store._blocks[sb.link.digest] = tampered
+        digest = store.store(DataBlock.build(b"hello"))
+        store.blocks[digest] = b"\x00" * len(store.blocks[digest])
         with pytest.raises(ValueError, match="HMAC verification failed"):
-            store[sb.link.digest]
+            store.fetch(digest)

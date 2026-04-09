@@ -16,7 +16,6 @@ from hashbuffers.codec import (
     SlotsBlock,
     TableBlock,
     VTableEntryType,
-    decode_block,
 )
 from hashbuffers.fitting import (
     NULL_ENTRY,
