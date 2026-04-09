@@ -204,6 +204,10 @@ Values `0b001` `0b010` and `0b011` are reserved for future use.
 Offsets for `DIRECT`, `BLOCK`, and `LINK`, MUST point into the heap, that is,
 _after_ the end of the entries list, and _before_ the end of the block.
 
+The `limit` field of a `LINK` entry is the count of elements in the linked
+array. However, "count of elements" can be schema-dependent. See [Links in
+TABLEs](#links-in-tables) for details.
+
 ##### Alignment requirements
 
 The alignment of a `TABLE` is equal to the largest alignment of any of its entries.
@@ -392,16 +396,11 @@ Writers SHOULD balance the tree, but the format permits unbalanced trees. In
 particular, inner nodes and leaf nodes are allowed to be intermixed at the same
 level.
 
-There are three kinds of link trees:
+The leaves of a link tree can either be `DATA`, `SLOTS`, or `TABLE` blocks.
+Their interpretation is schema defined.
 
-* `DATA` tree represents a single contiguous non-delimited array of fixed-size
-  elements.
-* `SLOTS` tree represents a slotted array of variable-size elements.
-* `TABLE` tree represents an array of heterogeneous elements, most typically
-  used for sub-blocks.
-
-A link tree MUST be homogenous, that is, all leaf nodes MUST be of the same
-block type.
+Link trees MUST NOT use `LINKS` blocks as leaf nodes. Implementations are free
+to assume that any `LINKS` block is an inner node.
 
 #### Traversal
 
@@ -483,6 +482,22 @@ In order to simplify reader implementation, a struct MUST fit into a single
 
 The following sections describe which other data types are recognized, and how
 to store them in a `TABLE`.
+
+### Links in TABLEs
+
+On the encoding level, every type of block is an array. On the data model level,
+this is no longer true:
+
+* a `TABLE` block may represent a struct
+* a `DATA` block may represent a single custom fixed-size type (see below).
+
+When using a `LINK` entry in a schema-aware `TABLE`, the `limit` field is as follows:
+
+* If the pointed-to item is an array, the `limit` MUST be the count of elements
+  in the array.
+* If the pointed-to item is a struct, the `limit` SHOULD be 1.
+* Implementations MAY define custom rules for custom fixed size types. In the
+  absence of such rule, we recommend using `limit` of 1.
 
 ### Fixed-size types
 
@@ -600,6 +615,10 @@ This representation is especially appropriate when:
 
 For complex element types (structs, arrays, arbitrary size byte strings), the
 array can be represented as an arbitrary size `TABLE` of its elements.
+
+Each entry of the table MUST be either an inlined `BLOCK` with the value, or a
+`LINK` to such block. The rules for `limit` in `TABLE`s apply, see [Links in
+TABLEs](#links-in-tables).
 
 ### Link trees
 
