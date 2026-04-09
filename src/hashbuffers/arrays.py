@@ -473,13 +473,13 @@ def build_table_array(
             elem = elem.outlink(store)
 
         # Does it fit in the current block?
+        trial = Table(current_table.entries + [elem])
         try:
-            table = Table(current_table.entries + [elem])
-            table.fit(store)
+            trial.fit(store)
+            current_table = trial  # keep outlinking decisions
         except ValueError:
             seal_current()
-
-        current_table.entries.append(elem)
+            current_table = Table([elem])
 
     seal_current()
 
