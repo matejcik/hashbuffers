@@ -35,7 +35,9 @@ def limits_to_cumulative(links: t.Sequence[Link]) -> list[Link]:
 
 
 def limits_to_individual(links: t.Sequence[Link]) -> list[Link]:
-    limits = [0] + [b.limit - a.limit for a, b in itertools.pairwise(links)]
+    limits = [links[0].limit] + [
+        b.limit - a.limit for a, b in itertools.pairwise(links)
+    ]
     return [Link(l.digest, limit) for l, limit in zip(links, limits)]
 
 
@@ -298,7 +300,9 @@ class BytestringArray(TreeArray[T, bytes, bytes | Link | Block]):
                     raise ValueError("NULL entry as a leaf")
                 leaves.append(block)
             return leaves
-        raise ValueError(f"Expected SlotsBlock or DataBlock, got {type(leaf).__name__}")
+        raise ValueError(
+            f"Expected SlotsBlock or TableBlock, got {type(leaf).__name__}"
+        )
 
     def entry_to_element(self, entry: bytes | Link | Block) -> bytes:
         if isinstance(entry, bytes):

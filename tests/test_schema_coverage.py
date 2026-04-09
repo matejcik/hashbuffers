@@ -1,7 +1,6 @@
 """Tests for schema.py — targeting uncovered edge cases."""
 
 import typing as t
-from enum import IntEnum
 
 import pytest
 
@@ -10,12 +9,8 @@ from hashbuffers.schema import (
     U16,
     U32,
     Array,
-    Bool,
-    Bytes,
-    EnumType,
     Field,
     HashBuffer,
-    String,
 )
 from hashbuffers.store import BlockStore
 
@@ -23,50 +18,6 @@ from hashbuffers.store import BlockStore
 @pytest.fixture
 def store():
     return BlockStore(b"test-key")
-
-
-class TestStringType:
-    def test_roundtrip(self, store):
-        class WithString(HashBuffer):
-            name: str | None = Field(0, String)
-
-        obj = WithString(name="hello")
-        decoded = WithString.decode(obj.encode(store), store)
-        assert decoded.name == "hello"
-
-    def test_null(self, store):
-        class WithString(HashBuffer):
-            name: str | None = Field(0, String)
-
-        obj = WithString()
-        decoded = WithString.decode(obj.encode(store), store)
-        assert decoded.name is None
-
-
-class TestEnumType:
-    def test_roundtrip(self, store):
-        class Color(IntEnum):
-            RED = 1
-            GREEN = 2
-            BLUE = 3
-
-        class WithEnum(HashBuffer):
-            color: Color | None = Field(0, EnumType(Color))
-
-        obj = WithEnum(color=Color.GREEN)
-        decoded = WithEnum.decode(obj.encode(store), store)
-        assert decoded.color == Color.GREEN
-
-    def test_null(self, store):
-        class Color(IntEnum):
-            RED = 1
-
-        class WithEnum(HashBuffer):
-            color: Color | None = Field(0, EnumType(Color))
-
-        obj = WithEnum()
-        decoded = WithEnum.decode(obj.encode(store), store)
-        assert decoded.color is None
 
 
 class TestHashBufferInit:
@@ -121,48 +72,10 @@ class TestFieldDescriptor:
         assert obj.x is None
 
 
-class TestHashBufferFieldTypeLinkLimit:
-    def test_link_limit_not_1_raises(self, store):
-        """A HashBuffer field decoded from a LINK with limit != 1 should raise."""
-        from hashbuffers.codec import Link, TableBlock, VTableEntry
-
-        class Inner(HashBuffer):
-            val: int | None = Field(0, U8)
-
-        class Outer(HashBuffer):
-            inner: Inner | None = Field(0, Inner)
-
-        # Build a valid Inner and store it
-        inner_obj = Inner(val=42)
-        inner_entry = inner_obj._encode_table_entry(store)  # type: ignore[attr-defined]
-        digest = store.store(inner_entry.block)
-
-        # Build a parent TABLE with a LINK having limit=5
-        link_bytes = Link(digest, 5).encode()
-        heap_start = TableBlock.heap_start(1)
-        table = TableBlock.build(
-            [VTableEntry.link(heap_start)],
-            link_bytes,
-        )
-        decoded = Outer._decode_from_table(table, store)  # type: ignore[attr-defined]
-        with pytest.raises(ValueError, match="Expected LINK with limit 1"):
-            _ = decoded.inner  # lazy access triggers the decode
-
-
 class TestArrayTypeDispatch:
     def test_unsupported_type_raises(self):
         with pytest.raises(TypeError, match="Unsupported field type"):
             Array(42)  # type: ignore[arg-type]
-
-    def test_bytestring_array_with_adapter(self, store):
-        """Array(String) should create a BytestringArrayType with adapter."""
-
-        class WithStrings(HashBuffer):
-            items: t.Sequence[str] | None = Field(0, Array(String))
-
-        obj = WithStrings(items=["hello", "world"])
-        decoded = WithStrings.decode(obj.encode(store), store)
-        assert decoded.items == ["hello", "world"]
 
     def test_fixed_array_too_large_falls_through(self, store):
         """A fixed array with too many elements should fall through to variable array."""

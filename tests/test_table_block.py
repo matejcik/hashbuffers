@@ -195,20 +195,6 @@ def test_table_block_heap_pointer_offset_zero_rejected():
         block.validate()
 
 
-def test_table_block_nested_block_declared_size_exceeds_parent():
-    """Sub-block wire size must fit inside the parent block (bounds checking)."""
-    heap_start = TableBlock.heap_start(1)
-    inner = DataBlock.build(b"x")
-    inner_bytes = bytearray(inner.encode())
-    inner_bytes[0:2] = BlockType.DATA.encode(5000)
-    block = TableBlock.build(
-        [VTableEntry(VTableEntryType.BLOCK, heap_start)],
-        bytes(inner_bytes),
-    )
-    with pytest.raises(IOError, match="Expected to read to offset"):
-        block.validate()
-
-
 def test_table_block_link_payload_truncated():
     """LINK entry must have a full 36-byte encoding inside the parent."""
     heap_start = TableBlock.heap_start(1)

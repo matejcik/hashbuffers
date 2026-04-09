@@ -90,6 +90,22 @@ def test_slots_block_first_offset_validation():
         block.validate()
 
 
+def test_slots_block_first_offset_exceeds_size():
+    """Spec: first offset must be no larger than the block size.
+
+    We test this through decode: encode a valid SLOTS block, then patch
+    the first offset to point beyond the block size. The decoder tries to
+    read more offsets than exist, failing with IOError.
+    """
+    block = SlotsBlock.build_slots([b"x"])
+    encoded = bytearray(block.encode())
+    # Patch the first offset (bytes 2-3) to be larger than block size
+    # Block size is 7 (header=2, offsets=4, data=1). Set first offset to 100.
+    encoded[2:4] = (100).to_bytes(2, "little")
+    with pytest.raises((ValueError, IOError)):
+        SlotsBlock.decode(bytes(encoded))
+
+
 def test_slots_block_offset_count_mismatch():
     """Offset count derived from first offset must match actual offsets."""
     # first_offset=8 -> expected (8-2)/2 = 3 offsets, but we have 2.

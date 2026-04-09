@@ -45,7 +45,7 @@ class TestBytestringArrayTypeChecks:
     def test_leaf_to_list_rejects_data_block(self):
         arr = BytestringArray.__new__(BytestringArray)
         block = DataBlock.build(b"data")
-        with pytest.raises(ValueError, match="SlotsBlock or DataBlock"):
+        with pytest.raises(ValueError, match="SlotsBlock or TableBlock"):
             arr.leaf_to_list(block)
 
 

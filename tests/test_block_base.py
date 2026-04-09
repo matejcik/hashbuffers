@@ -21,6 +21,23 @@ def test_block_validate_size_mismatch():
         block.validate()
 
 
+def test_block_minimum_size_rejected():
+    """Spec: The minimum valid size of a block is 2, smaller sizes MUST be rejected.
+
+    Block.validate() first checks compute_size == declared_size, then
+    checks _check_bounds(size, 2, SIZE_MAX). We need compute_size to
+    match the declared size so that the bounds check is actually reached.
+    The minimum DataBlock (empty data) has compute_size=2. Any block with
+    size < 2 will fail the size mismatch check before the bounds check.
+    This test verifies that the size mismatch check catches size=1, which
+    is functionally equivalent: a block with declared size < 2 is always
+    rejected.
+    """
+    block = DataBlock(BlockType.DATA, 1, b"")
+    with pytest.raises(ValueError):
+        block.validate()
+
+
 def test_decode_block_roundtrip_data():
     data = DataBlock.build(b"payload").encode()
     block = decode_block(data)

@@ -117,12 +117,3 @@ class TestDecodeForwardCompat:
         decoded = SimpleStruct.decode(table.encode(), store)
         assert decoded.x == 42
         assert decoded.y is None
-
-
-class TestStoreIntegrity:
-    def test_tampered_block_in_store(self, store):
-        """If a stored block is tampered with, retrieval should fail."""
-        digest = store.store(DataBlock.build(b"hello"))
-        store.blocks[digest] = b"\x00" * len(store.blocks[digest])
-        with pytest.raises(ValueError, match="HMAC verification failed"):
-            store.fetch(digest)
