@@ -1,6 +1,6 @@
+import typing as t
 from abc import abstractmethod
 from dataclasses import dataclass
-import typing as t
 
 from ..arrays import (
     BytestringArray,
@@ -15,9 +15,8 @@ from ..arrays import (
 from ..codec import SIZE_MAX, Block, DataBlock, Link, TableBlock, VTableEntryType
 from ..fitting import BlockEntry, DirectEntry, TableEntry
 from ..store import BlockStore
-from ..util import padded_element_size, pack_flat_array, unpack_flat_array
+from ..util import pack_flat_array, padded_element_size, unpack_flat_array
 from .abc import BlockDecoderType, FieldType, FixedFieldType
-from .struct import StructType
 
 T = t.TypeVar("T")
 
@@ -45,7 +44,9 @@ class FixedArrayType(FixedFieldType[t.Sequence[T]]):
 
     def encode_bytes(self, value: t.Sequence[T]) -> bytes:
         if len(value) != self.count:
-            raise ValueError(f"Expected {self.count} elements, got {len(value)}")
+            raise ValueError(
+                f"FixedArray expects {self.count} elements, got {len(value)}"
+            )
         byte_values = [self.element_type.encode_bytes(v) for v in value]
         return pack_flat_array(byte_values, self.get_alignment())
 
@@ -89,7 +90,9 @@ class FixedArrayType(FixedFieldType[t.Sequence[T]]):
             link = table.get_block(index)
             assert isinstance(link, Link)
             if link.limit != self.count:
-                raise ValueError(f"Expected {self.count} elements, got {link.limit}")
+                raise ValueError(
+                    f"FixedArray expects {self.count} elements, got {link.limit}"
+                )
             block = store.fetch(link.digest)
             if not isinstance(block, DataBlock):
                 raise ValueError(f"Expected DATA block, got {type(block)}")
@@ -120,7 +123,7 @@ class VarArrayType(BlockDecoderType[t.Sequence[T]]):
 
     def check_count(self, actual_count: int) -> None:
         if self.count is not None and actual_count != self.count:
-            raise ValueError(f"Expected {self.count} elements, got {actual_count}")
+            raise ValueError(f"Array expects {self.count} elements, got {actual_count}")
 
     def decode(
         self, table: TableBlock, index: int, store: BlockStore
@@ -187,9 +190,11 @@ class DataArrayType(VarArrayType[T]):
 class BlockArrayType(VarArrayType[T]):
     block_decoder_type: BlockDecoderType[T]
 
-    def __init__(self, struct_type: StructType, count: int | None = None) -> None:
+    def __init__(
+        self, block_decoder_type: BlockDecoderType[T], count: int | None = None
+    ) -> None:
         super().__init__(count)
-        self.struct_type = struct_type
+        self.block_decoder_type = block_decoder_type
 
     def encode(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
         self.check_count(len(value))

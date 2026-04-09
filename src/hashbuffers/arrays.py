@@ -251,12 +251,12 @@ class DataArray(TreeArray[T, bytes, memoryview]):
 
     def leaf_length(self, leaf: Block) -> int:
         if not isinstance(leaf, DataBlock):
-            raise ValueError(f"Expected DataBlock, got {type(leaf).__name__}")
+            raise ValueError(f"Expected DATA leaf, got {type(leaf).__name__}")
         return leaf.array_length(self.elem_size, align=self.elem_align)
 
     def leaf_to_list(self, leaf: Block) -> t.Sequence[memoryview]:
         if not isinstance(leaf, DataBlock):
-            raise ValueError(f"Expected DataBlock, got {type(leaf).__name__}")
+            raise ValueError(f"Expected DATA leaf, got {type(leaf).__name__}")
         return leaf.get_array(self.elem_size, align=self.elem_align)
 
     def entry_to_element(self, entry: memoryview) -> bytes:

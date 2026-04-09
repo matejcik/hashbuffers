@@ -249,7 +249,8 @@ class Table:
             align = ep.entry.alignment()
             if align.bit_count() != 1:
                 # not a power-of-two, raise:
-                raise ValueError(f"Field {ep.idx} has invalid alignment: {align} (not a power-of-two)"
+                raise ValueError(
+                    f"Field {ep.idx} has invalid alignment: {align} (not a power-of-two)"
                 )
             align_groups[align].append(ep)
 
