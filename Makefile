@@ -7,3 +7,7 @@ style:
 
 test:
 	uv run pytest
+
+coverage:
+	uv run pytest --cov-report=html
+	@echo "HTML report: htmlcov/index.html"

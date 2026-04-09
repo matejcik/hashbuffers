@@ -16,11 +16,23 @@ dev = [
     "isort>=8.0.1",
     "pyright>=1.1.408",
     "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
     "trezor>=0.13",
 ]
 
 [tool.isort]
 profile = "black"
+
+[tool.pytest.ini_options]
+addopts = "--cov=hashbuffers --cov-branch --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = ["hashbuffers"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
 
 [tool.pyright]
 pythonVersion = "3.12"
