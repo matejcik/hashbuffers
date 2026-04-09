@@ -22,7 +22,7 @@ import typing as t
 from enum import IntEnum
 
 from .codec import Link, TableBlock
-from .fitting import TableField, fit_table
+from .fitting import TableEntry, Table
 from .schema import (
     U8,
     U16,
@@ -34,7 +34,7 @@ from .schema import (
     EnumType,
     String,
 )
-from .store import BlockStore, StoredBlock
+from .store import BlockStore
 
 if t.TYPE_CHECKING:
     from trezorlib import protobuf
@@ -165,7 +165,7 @@ def _encode_field_value(
     field: protobuf.Field,
     value: t.Any,
     store: BlockStore,
-) -> TableField:
+) -> TableEntry:
     """Encode a single protobuf field value into a TableField."""
     hb_type = _hb_type_for_field(field)
 
@@ -190,7 +190,7 @@ def _decode_field_value(
     return hb_type.decode_value(table, index, store)
 
 
-def serialize(msg: protobuf.MessageType, store: BlockStore) -> StoredBlock:
+def serialize(msg: protobuf.MessageType, store: BlockStore) -> TableEntry:
     """Serialize a protobuf MessageType instance into Hashbuffers.
 
     Protobuf field tags become table indices. Fields are encoded according to

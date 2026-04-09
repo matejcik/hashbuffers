@@ -10,7 +10,6 @@ from hashbuffers.codec import (
     VTableEntry,
     VTableEntryType,
 )
-from hashbuffers.store import StoredBlock
 
 from .conftest import (
     ArrayStruct,

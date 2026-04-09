@@ -1,3 +1,4 @@
+import abc
 import typing as t
 from dataclasses import dataclass
 from enum import IntEnum
@@ -5,6 +6,8 @@ from io import BytesIO
 from os import SEEK_CUR
 
 SIZE_MAX = 0x1FFF  # 8191
+
+from .util import pack_flat_array, padded_element_size, unpack_flat_array
 
 
 class Reader(BytesIO):
@@ -168,7 +171,7 @@ class Link:
 
 
 @dataclass
-class Block:
+class Block(abc.ABC):
     block_type: BlockType
     size: int
 
@@ -187,6 +190,7 @@ class Block:
             raise ValueError(f"Expected {cls.BLOCK_TYPE} block, got {block_type}")
         return r, size
 
+    @abc.abstractmethod
     def compute_size(self) -> int:
         raise NotImplementedError
 
@@ -202,10 +206,12 @@ class Block:
         self.validate()
         return self._encode_without_validation()
 
+    @abc.abstractmethod
     def _encode_without_validation(self) -> bytes:
         raise NotImplementedError
 
     @classmethod
+    @abc.abstractmethod
     def _decode_without_validation(cls, data: bytes) -> t.Self:
         raise NotImplementedError
 
@@ -225,6 +231,9 @@ class TableBlock(Block):
     reserved_bits: int = 0
 
     BLOCK_TYPE = BlockType.TABLE
+
+    # block header + vtable header + one entry = 6 bytes overhead
+    HEAP_MAX_SIZE: t.ClassVar[int] = SIZE_MAX - 6
 
     def compute_size(self) -> int:
         return self.heap_start(len(self.vtable)) + len(self.heap)
@@ -388,43 +397,21 @@ class DataBlock(Block):
     def compute_size(self) -> int:
         return 2 + len(self.data)
 
-    @staticmethod
-    def padded_elem_size(elem_size: int, align: int = 1) -> int:
-        # round up to the nearest multiple of align
-        return (elem_size + align - 1) & ~(align - 1)
-
     @classmethod
     def build_array(cls, data: t.Sequence[bytes], *, align: int = 1) -> t.Self:
-        if not data:
-            return cls.build(b"", align=align)
-        if not all(len(elem) == len(data[0]) for elem in data):
-            raise ValueError("All elements must have the same length")
-        padded_elem_size = cls.padded_elem_size(len(data[0]), align)
-        padding_size = padded_elem_size - len(data[0])
-        elem_padding = b"\x00" * padding_size
-        return cls.build(b"".join(elem + elem_padding for elem in data), align=align)
+        array_data = pack_flat_array(data, align)
+        return cls.build(array_data, align=align)
 
     def get_data(self, *, align: int = 1) -> memoryview:
         pad_size = max(align, 2) - 2
         return memoryview(self.data)[pad_size:]
 
-    def get_array(self, elem_size: int, *, align: int = 1) -> list[bytes]:
+    def get_array(self, elem_size: int, *, align: int = 1) -> list[memoryview]:
         data = self.get_data(align=align)
-        padded_elem_size = self.padded_elem_size(elem_size, align)
-        if len(data) % padded_elem_size != 0:
-            raise ValueError(
-                f"Data length {len(data)} is not divisible by padded element size {padded_elem_size}"
-            )
-        elems_untrimmed = [
-            data[i : i + padded_elem_size]
-            for i in range(0, len(data), padded_elem_size)
-        ]
-        return [bytes(elem[:elem_size]) for elem in elems_untrimmed]
+        return unpack_flat_array(data, elem_size, align)
 
     def array_length(self, elem_size: int, *, align: int = 1) -> int:
-        return len(self.get_data(align=align)) // self.padded_elem_size(
-            elem_size, align
-        )
+        return len(self.get_data(align=align)) // padded_element_size(elem_size, align)
 
     def _encode_without_validation(self) -> bytes:
         w = self._start_encode()
@@ -445,6 +432,9 @@ class SlotsBlock(Block):
     heap: bytes
 
     BLOCK_TYPE = BlockType.SLOTS
+
+    # block header + first offset + sentinel = 6 bytes overhead
+    MAX_ELEMENT_SIZE: t.ClassVar[int] = SIZE_MAX - 6
 
     def compute_size(self) -> int:
         return 2 + 2 * len(self.offsets) + len(self.heap)
@@ -470,19 +460,18 @@ class SlotsBlock(Block):
         heap_start = cls.heap_start(len(offsets))
         return cls.build([off + heap_start for off in offsets], bytes(heap))
 
-    @property
     def element_count(self) -> int:
         return len(self.offsets) - 1
 
     def get_entry(self, index: int) -> bytes:
-        _check_bounds(index, 0, self.element_count - 1)
+        _check_bounds(index, 0, self.element_count() - 1)
         heap_start = self.heap_start(len(self.offsets))
         start = self.offsets[index]
         end = self.offsets[index + 1]
         return self.heap[start - heap_start : end - heap_start]
 
     def get_entries(self) -> list[bytes]:
-        return [self.get_entry(i) for i in range(self.element_count)]
+        return [self.get_entry(i) for i in range(self.element_count())]
 
     def _encode_without_validation(self) -> bytes:
         w = self._start_encode()

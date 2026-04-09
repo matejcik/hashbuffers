@@ -4,107 +4,251 @@ from __future__ import annotations
 
 import struct
 import typing as t
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import dataclass_transform
+from typing import dataclass_transform, overload
 
 from .arrays import (
+    DataArray,
+    build_bytestring_array,
     build_data_array,
-    build_slots_array,
     build_table_array,
-    decode_data_elements,
-    decode_slots_entries,
-    decode_table_entries,
 )
 from .codec import (
+    SIZE_MAX,
+    Block,
     DataBlock,
     Link,
+    SlotsBlock,
     TableBlock,
+    decode_block,
 )
-from .fitting import (
-    DirectData,
-    IntField,
-    TableField,
-    fit_table,
-)
-from .store import BlockStore, StoredBlock
+from .fitting import BlockEntry, DirectEntry, TableEntry, int_inline_or_direct
+from .store import BlockStore
 
 # ============================================================
 # Primitive types
 # ============================================================
 
+T = t.TypeVar("T")
+U = t.TypeVar("U")
 
-class Primitive(Enum):
-    """Primitive wire types. Each member is usable directly as a field type."""
 
-    #       (size, alignment, signed, is_float)
-    U8 = (1, 1, False, False)
-    U16 = (2, 2, False, False)
-    U32 = (4, 4, False, False)
-    U64 = (8, 8, False, False)
-    I8 = (1, 1, True, False)
-    I16 = (2, 2, True, False)
-    I32 = (4, 4, True, False)
-    I64 = (8, 8, True, False)
-    F32 = (4, 4, False, True)
-    F64 = (8, 8, False, True)
+class Codec(t.Generic[T], ABC):
+    """Generic encoder that can:
+
+    * take a Python value of type T and encode it as an entry in a TABLE struct
+    * take a TABLE block entry and decode it into a Python value of type T
+    """
+
+    @abstractmethod
+    def encode_value(self, value: T, store: BlockStore) -> TableEntry:
+        raise NotImplementedError
+
+    @abstractmethod
+    def decode_value(
+        self, table: TableBlock, index: int, store: BlockStore
+    ) -> T | None:
+        raise NotImplementedError
+
+
+class BlockCodec(Codec[T]):
+    """Codec that can store the value of type T in a stand-alone block."""
+
+    @abstractmethod
+    def encode_block(self, value: T, store: BlockStore) -> BlockEntry:
+        raise NotImplementedError
+
+    @abstractmethod
+    def decode_block(self, block: Block, store: BlockStore) -> T:
+        raise NotImplementedError
+
+
+class SmallFixedCodec(BlockCodec[T]):
+    """Codec for a small (smaller than block size) fixed-size value.
+
+    Builds on BlockCodec -- every fixed-size value must be encodable as a stand-alone DATA block.
+    In addition to BlockCodec, it can report its size and alignment, and encode to / decode from
+    raw bytes, so that we can build fixed-size arrays of it.
+    """
+
+    @property
+    @abstractmethod
+    def size(self) -> int:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def alignment(self) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def to_bytes(self, value: T) -> bytes:
+        raise NotImplementedError
+
+    @abstractmethod
+    def from_bytes(self, data: bytes | memoryview) -> T:
+        raise NotImplementedError
+
+    def encode_block(self, value: T, store: BlockStore) -> BlockEntry:
+        data = self.to_bytes(value)
+        block = DataBlock.build(data, align=self.alignment)
+        return BlockEntry.from_data(block, self.alignment, 1)
+
+    def decode_block(self, block: Block, store: BlockStore) -> T:
+        if not isinstance(block, DataBlock):
+            raise ValueError(f"SmallFixedCodec expects DATA block, got {block}")
+        if block.size != self.size:
+            raise ValueError(
+                f"SmallFixedCodec expects {self.size} bytes, got {block.size}"
+            )
+        return self.from_bytes(block.data)
+
+
+@dataclass(frozen=True)
+class PrimitiveInt(SmallFixedCodec[int]):
+    _size: int
+    _signed: bool
 
     @property
     def size(self) -> int:
-        return self.value[0]
+        return self._size
 
     @property
     def alignment(self) -> int:
-        return self.value[1]
+        return self.size
 
-    @property
-    def signed(self) -> bool:
-        return self.value[2]
+    def to_bytes(self, value: int) -> bytes:
+        return value.to_bytes(self.size, "little", signed=self._signed)
 
-    @property
-    def is_float(self) -> bool:
-        return self.value[3]
+    def from_bytes(self, data: bytes | memoryview) -> int:
+        return int.from_bytes(data, "little", signed=self._signed)
+
+    # --- miscellaneous ---
 
     def fits_inline(self, value: int) -> bool:
         """Check if an integer value fits in a 13-bit inline field."""
-        if self.is_float:
-            return False
-        if self.signed:
+        if self._signed:
             return -4096 <= value <= 4095
         else:
             return 0 <= value <= 8191
 
-    # --- encode/decode as a table field ---
+    # --- FieldCodec protocol ---
 
-    def encode_value(self, value: int | float, store: BlockStore) -> TableField:
+    def encode_value(self, value: int, store: BlockStore) -> TableEntry:
         """Encode a primitive value into a TableField."""
-        if not self.is_float:
-            return IntField(int(value), self.size, self.signed)
-        # Float: always DIRECT
-        data = _encode_primitive(self, value)
-        return DirectData(data, self.alignment)
+        return int_inline_or_direct(value, self.size, self._signed)
 
-    def decode_value(self, table: TableBlock, index: int, store: BlockStore) -> t.Any:
+    def decode_value(
+        self, table: TableBlock, index: int, store: BlockStore
+    ) -> int | None:
         """Decode a primitive value from a TABLE block."""
-        if self.is_float:
-            data = table.get_fixedsize(index, self.size)
-            if data is None:
-                return None
-            return _decode_primitive(self, data)
-        return table.get_int(index, self.size, signed=self.signed)
+        return table.get_int(index, self.size, signed=self._signed)
+
+
+@dataclass(frozen=True)
+class PrimitiveFloat(SmallFixedCodec[float]):
+    _size: int
+
+    # --- FixedCodec protocol ---
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @property
+    def alignment(self) -> int:
+        return self._size
+
+    def to_bytes(self, value: float) -> bytes:
+        return struct.pack(self.struct_format, value)
+
+    def from_bytes(self, data: bytes | memoryview) -> float:
+        return struct.unpack(self.struct_format, data)[0]
+
+    # --- miscellaneous ---
+
+    @property
+    def struct_format(self) -> str:
+        return "<f" if self._size == 4 else "<d"
+
+    # --- FieldCodec protocol ---
+
+    def encode_value(self, value: float, store: BlockStore) -> TableEntry:
+        """Encode a primitive value into a TableField."""
+        data = self.to_bytes(value)
+        return DirectEntry(data, self.alignment, 1)
+
+    def decode_value(
+        self, table: TableBlock, index: int, store: BlockStore
+    ) -> float | None:
+        """Decode a primitive value from a TABLE block."""
+        data = table.get_fixedsize(index, self.size)
+        if data is None:
+            return None
+        return self.from_bytes(data)
 
 
 # Module-level constants
-U8 = Primitive.U8
-U16 = Primitive.U16
-U32 = Primitive.U32
-U64 = Primitive.U64
-I8 = Primitive.I8
-I16 = Primitive.I16
-I32 = Primitive.I32
-I64 = Primitive.I64
-F32 = Primitive.F32
-F64 = Primitive.F64
+U8 = PrimitiveInt(1, False)
+U16 = PrimitiveInt(2, False)
+U32 = PrimitiveInt(4, False)
+U64 = PrimitiveInt(8, False)
+I8 = PrimitiveInt(1, True)
+I16 = PrimitiveInt(2, True)
+I32 = PrimitiveInt(4, True)
+I64 = PrimitiveInt(8, True)
+F32 = PrimitiveFloat(4)
+F64 = PrimitiveFloat(8)
+
+
+# ============================================================
+# Adapters
+# ============================================================
+
+PythonType = t.TypeVar("PythonType")
+WireType = t.TypeVar("WireType")
+
+
+@dataclass(frozen=True)
+class Adapter(t.Generic[PythonType, WireType]):
+    """Semantic adapter: transforms between Python type P and wire type W.
+
+    The wire_type handles serialization; the adapter handles semantics.
+    """
+
+    wire_codec: Codec[WireType]
+    py_encode: t.Callable[[PythonType], WireType]  # Python value → wire value
+    py_decode: t.Callable[[WireType], PythonType]  # wire value → Python value
+
+    @classmethod
+    def adapt(
+        cls,
+        adapter: "Adapter[T, WireType]",
+        encode: t.Callable[[PythonType], T],
+        decode: t.Callable[[T], PythonType],
+    ) -> t.Self:
+        def adapt_encode(value: PythonType) -> WireType:
+            return adapter.py_encode(encode(value))
+
+        def adapt_decode(value: WireType) -> PythonType:
+            return decode(adapter.py_decode(value))
+
+        return cls(adapter.wire_codec, adapt_encode, adapt_decode)
+
+
+# Predefined adapters
+Bool = Adapter(U8, int, bool)
+
+
+def identity_adapter(codec: Codec[T]) -> Adapter[T, T]:
+    return Adapter(codec, lambda v: v, lambda v: v)
+
+
+def EnumType(enum_cls: type[Enum], repr: PrimitiveInt = U8) -> Adapter:
+    """Create an adapter for an Enum type stored as a primitive."""
+    return Adapter(repr, lambda e: e.value, enum_cls)
 
 
 # ============================================================
@@ -112,238 +256,271 @@ F64 = Primitive.F64
 # ============================================================
 
 
-@dataclass(frozen=True)
-class _FixedArray:
-    """Fixed-count array of fixed-size elements. Stored as DIRECT on heap."""
+@dataclass(frozen=True, kw_only=True)
+class _SmallFixedArray(SmallFixedCodec[list[T]], t.Generic[T, U]):
+    """Small (smaller than block size) fixed-count array of fixed-size elements.
+    Stored as DIRECT on heap.
+    """
 
-    element: t.Any  # Primitive, _FixedArray, or Adapted wrapping a fixed-size type
+    element_codec: SmallFixedCodec[U]
+    element_adapter: Adapter[T, U]
     count: int
+
+    @t.overload
+    @classmethod
+    def new(
+        cls, codec: SmallFixedCodec[U], /, count: int
+    ) -> "_SmallFixedArray[U, U]": ...
+
+    @t.overload
+    @classmethod
+    def new(cls, adapter: Adapter[T, U], /, count: int) -> "_SmallFixedArray[T, U]": ...
+
+    @classmethod
+    def new(
+        cls, codec_or_adapter: SmallFixedCodec | Adapter, /, count: int
+    ) -> "_SmallFixedArray":
+        if isinstance(codec_or_adapter, Codec):
+            return cls(
+                element_codec=codec_or_adapter,
+                element_adapter=Adapter(codec_or_adapter, lambda v: v, lambda v: v),
+                count=count,
+            )
+
+        if not isinstance(codec_or_adapter.wire_codec, SmallFixedCodec):
+            raise TypeError(
+                f"Expected SmallFixedCodec, got {codec_or_adapter.wire_codec}"
+            )
+        return cls(
+            element_codec=codec_or_adapter.wire_codec,
+            element_adapter=codec_or_adapter,
+            count=count,
+        )
+
+    @property
+    def padded_element_size(self) -> int:
+        return DataBlock.padded_elem_size(
+            self.element_codec.size,
+            self.element_codec.alignment,
+        )
 
     @property
     def size(self) -> int:
-        elem_size = fixed_size(self.element)
-        elem_align = alignment_of(self.element)
-        padded = DataBlock.padded_elem_size(elem_size, elem_align)
-        return padded * self.count
+        return self.padded_element_size * self.count
 
-    def encode_value(self, value: list, store: BlockStore) -> TableField:
+    @property
+    def alignment(self) -> int:
+        return self.element_codec.alignment
+
+    def to_bytes(self, value: list[T]) -> bytes:
+        if len(value) != self.count:
+            raise ValueError(
+                f"FixedArray expects {self.count} elements, got {len(value)}"
+            )
+        wire_value = [self.element_adapter.py_encode(v) for v in value]
+        return b"".join(self.element_codec.to_bytes(v) for v in wire_value)
+
+    def from_bytes(self, data: bytes | memoryview) -> list[T]:
+        if len(data) != self.size:
+            raise ValueError(f"FixedArray expects {self.size} bytes, got {len(data)}")
+        chunks = [
+            data[
+                i * self.padded_element_size : (i * self.padded_element_size)
+                + self.element_codec.size
+            ]
+            for i in range(self.count)
+        ]
+        elems = [self.element_codec.from_bytes(chunk) for chunk in chunks]
+        return [self.element_adapter.py_decode(v) for v in elems]
+
+    def encode_value(self, value: list[T], store: BlockStore) -> TableEntry:
         """Encode a fixed-size array as DIRECT bytes on heap."""
         if len(value) != self.count:
             raise ValueError(
                 f"FixedArray expects {self.count} elements, got {len(value)}"
             )
-        data = _encode_fixed_array(self, value)
-        return DirectData(data, alignment_of(self.element))
+        data = self.to_bytes(value)
+        return DirectEntry(data, self.alignment, self.count)
 
     def decode_value(
         self, table: TableBlock, index: int, store: BlockStore
-    ) -> list | None:
+    ) -> list[T] | None:
         """Decode a fixed-size array from a TABLE block."""
         data = table.get_fixedsize(index, self.size)
         if data is None:
             return None
-        return _decode_fixed_array(self, data)
+        return self.from_bytes(data)
 
 
-@dataclass(frozen=True)
-class _VarArray:
-    """Variable-length array. Wire encoding depends on element type."""
+@dataclass(frozen=True, kw_only=True)
+class _VarArray(BlockCodec[t.Sequence[T]], t.Generic[T, U]):
+    """Base for variable-length array types."""
 
-    element: t.Any  # any type: Primitive, _FixedArray, _VarArray, Adapted, HashBuffer
+    element_adapter: Adapter[T, U]
+    count: int | None = None
 
-    def _unwrap_adapted(self) -> tuple[t.Any, list[Adapted]]:
-        """Unwrap all Adapted layers, returning (wire_elem, adapter_chain)."""
-        elem = self.element
-        chain: list[Adapted] = []
-        while isinstance(elem, Adapted):
-            chain.append(elem)
-            elem = elem.wire_type
-        return elem, chain
-
-    def encode_value(self, value: list, store: BlockStore) -> TableField:
-        """Encode a variable-length array."""
-        wire_elem, adapters = self._unwrap_adapted()
-
-        # Apply adapters to convert Python values to wire values
-        wire_values = value
-        for adapter in adapters:
-            wire_values = [adapter.py_encode(v) for v in wire_values]
-
-        if not wire_values:
-            # Empty array: build an empty block of the appropriate type
-            if is_fixed_size(wire_elem):
-                sb = build_data_array([], alignment_of(wire_elem), store)
-            elif _is_hashbuffer(wire_elem):
-                sb = build_table_array([], store)
-            else:
-                sb = build_slots_array([], store)
-            return sb
-
-        if is_fixed_size(wire_elem):
-            return self._encode_data(wire_elem, wire_values, store)
-        elif _is_hashbuffer(wire_elem):
-            return self._encode_table(wire_elem, wire_values, store)
-        else:
-            return self._encode_slots(wire_elem, wire_values, store)
+    def encode_value(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
+        return self.encode_block(value, store)
 
     def decode_value(
         self, table: TableBlock, index: int, store: BlockStore
-    ) -> list | None:
-        """Decode a variable-length array from a TABLE block."""
-        data = _resolve_block_or_link(table, index, store)
-        if data is None:
+    ) -> t.Sequence[T] | None:
+        block = _resolve_block_or_link(table, index, store)
+        if block is None:
             return None
-        return self._decode_from_data(data, store)
+        return self.decode_block(block, store)
 
-    def _decode_from_data(self, data: bytes, store: BlockStore) -> list:
-        """Decode from raw block data (used by decode_value and SLOTS decode)."""
-        wire_elem, adapters = self._unwrap_adapted()
 
-        if is_fixed_size(wire_elem):
-            result = self._decode_data(wire_elem, data, store)
-        elif _is_hashbuffer(wire_elem):
-            result = self._decode_table(wire_elem, data, store)
+@dataclass(frozen=True, kw_only=True)
+class _DataArray(_VarArray[T, U]):
+    """Variable-length array of fixed-size elements. DATA representation."""
+
+    element_codec: SmallFixedCodec[U]
+
+    def to_byte_array(self, value: t.Sequence[T]) -> list[bytes]:
+        if self.count is not None and len(value) != self.count:
+            raise ValueError(
+                f"_DataArray expects {self.count} elements, got {len(value)}"
+            )
+        adapted = [self.element_adapter.py_encode(v) for v in value]
+        elements = [self.element_codec.to_bytes(v) for v in adapted]
+        return elements
+
+    def from_byte_array(self, data: t.Sequence[bytes]) -> t.Sequence[T]:
+        if self.count is not None and len(data) != self.count:
+            raise ValueError(
+                f"_DataArray expects {self.count} elements, got {len(data)}"
+            )
+        adapted = [self.element_codec.from_bytes(v) for v in data]
+        return [self.element_adapter.py_decode(v) for v in adapted]
+
+    def encode_block(self, value: t.Sequence[T], store: BlockStore) -> BlockEntry:
+        elements = self.to_byte_array(value)
+        return build_data_array(elements, self.element_codec.alignment, store)
+
+    def decode_block(self, block: Block, store: BlockStore) -> t.Sequence[T]:
+        array = DataArray(
+            block, store, self.element_codec.size, self.element_codec.alignment
+        )
+        return self.from_byte_array(array[:])
+
+
+@dataclass(frozen=True, kw_only=True)
+class _BytestringArray(_VarArray[T, bytes]):
+    """Variable-length array of byte strings. SLOTS representation with TABLE fallback."""
+
+    def encode_block(self, value: list[T], store: BlockStore) -> BlockEntry:
+        byte_array = [self.element_adapter.py_encode(v) for v in value]
+        return build_bytestring_array(byte_array, store)
+
+    def decode_block(self, block: Block, store: BlockStore) -> list[T]:
+
+        leaves = collect_leaves(block, store)
+        if not leaves:
+            return self._adapt_decode([])
+        first = leaves[0]
+        if isinstance(first, TableBlock):
+            # TABLE representation: each entry is a DATA block of U8
+            entries = decode_table_entries(block, store)
+            result: list[bytes] = []
+            for entry in entries:
+                repr = DataRepr(1, 1)
+                raw = decode_leaves(entry, repr, store)
+                result.append(bytes(b[0] for b in raw))
+            return self._adapt_decode(t.cast(list[T], result))
         else:
-            result = self._decode_slots(wire_elem, data, store)
+            # SLOTS representation
+            raw_slots = decode_slots_entries(block, store)
+            return self._adapt_decode(t.cast(list[T], raw_slots))
 
-        # Apply adapters in reverse to convert wire values to Python values
-        for adapter in reversed(adapters):
-            result = [adapter.py_decode(v) for v in result]
-        return result
 
-    # --- Encode helpers (one per array representation) ---
+@dataclass(frozen=True, kw_only=True)
+class _BlockArray(_VarArray[T, T]):
+    """Variable-length array of block-encoded elements (structs or nested arrays).
+    TABLE representation."""
 
-    @staticmethod
-    def _encode_data(
-        wire_elem: t.Any, wire_values: list, store: BlockStore
-    ) -> TableField:
-        if isinstance(wire_elem, _FixedArray):
-            elements = [_encode_fixed_array(wire_elem, v) for v in wire_values]
-        elif isinstance(wire_elem, Primitive):
-            elements = [_encode_primitive(wire_elem, v) for v in wire_values]
-        else:
-            raise TypeError(f"Cannot encode as DATA array: {wire_elem}")
-        sb = build_data_array(elements, alignment_of(wire_elem), store)
-        return sb
+    element: t.Any  # HashBuffer class or BlockCodec instance
 
-    @staticmethod
-    def _encode_table(
-        wire_elem: t.Any, wire_values: list, store: BlockStore
-    ) -> TableField:
-        encoded = [v.encode(store) for v in wire_values]
-        sb = build_table_array(encoded, store)
-        return sb
-
-    @staticmethod
-    def _encode_slots(
-        wire_elem: t.Any, wire_values: list, store: BlockStore
-    ) -> TableField:
-        slot_bytes: list[bytes] = []
-        for v in wire_values:
-            if isinstance(wire_elem, _VarArray):
-                tf = wire_elem.encode_value(v, store)
-                assert isinstance(tf, StoredBlock)
-                slot_bytes.append(tf.data)
-            elif _is_hashbuffer(wire_elem):
-                slot_bytes.append(v.encode(store).data)
+    def encode_block(self, value: list[T], store: BlockStore) -> StoredBlock:
+        value = self._adapt_encode(value)
+        sbs: list[StoredBlock] = []
+        for v in value:
+            if _is_hashbuffer(self.element):
+                sbs.append(t.cast(HashBuffer, v).encode(store))
+            elif isinstance(self.element, BlockCodec):
+                sbs.append(self.element.encode_block(v, store))
             else:
-                raise TypeError(f"Cannot encode as SLOTS element: {wire_elem}")
-        sb = build_slots_array(slot_bytes, store)
-        return sb
+                raise TypeError(f"Cannot encode element: {self.element}")
+        return build_table_array(sbs, store)
 
-    # --- Decode helpers (one per array representation) ---
-
-    @staticmethod
-    def _decode_data(wire_elem: t.Any, data: bytes, store: BlockStore) -> list:
-        elem_size = fixed_size(wire_elem)
-        elem_align = alignment_of(wire_elem)
-        raw_elems = decode_data_elements(data, elem_size, elem_align, store)
-        if isinstance(wire_elem, _FixedArray):
-            return [_decode_fixed_array(wire_elem, e) for e in raw_elems]
-        elif isinstance(wire_elem, Primitive):
-            return [_decode_primitive(wire_elem, e) for e in raw_elems]
-        else:
-            raise TypeError(f"Cannot decode DATA array of: {wire_elem}")
-
-    @staticmethod
-    def _decode_table(wire_elem: t.Any, data: bytes, store: BlockStore) -> list:
-        entries = decode_table_entries(data, store)
+    def decode_block(self, block: Block, store: BlockStore) -> list[T] | None:
+        entries = decode_table_entries(block, store)
         result: list[t.Any] = []
         for entry in entries:
-            if isinstance(entry, Link):
-                sb = store[entry.digest]
-                result.append(wire_elem.decode(sb.data, store))
+            if _is_hashbuffer(self.element):
+                result.append(self.element.decode(entry.encode(), store))
+            elif isinstance(self.element, BlockCodec):
+                result.append(self.element.decode_block(entry, store))
             else:
-                result.append(wire_elem.decode(entry.encode(), store))
-        return result
-
-    @staticmethod
-    def _decode_slots(wire_elem: t.Any, data: bytes, store: BlockStore) -> list:
-        raw_slots = decode_slots_entries(data, store)
-        if isinstance(wire_elem, _VarArray):
-            return [wire_elem._decode_from_data(s, store) for s in raw_slots]
-        elif _is_hashbuffer(wire_elem):
-            return [wire_elem.decode(s, store) for s in raw_slots]
-        else:
-            raise TypeError(f"Cannot decode SLOTS element: {wire_elem}")
+                raise TypeError(f"Cannot decode element: {self.element}")
+        return self._adapt_decode(result)
 
 
-def Array(element: t.Any, *, count: int | None = None) -> _FixedArray | _VarArray:
+def Array(element: Codec[T], *, count: int | None = None) -> t.Any:
+    return
     """Create an array type.
 
     Array(U32)           — variable-length array of u32
     Array(U32, count=3)  — fixed-size array of 3 u32s
     Array(Array(U32))    — variable array of variable arrays (no wrapper struct needed)
     """
+    # Detect adaptation level
+    is_adapted = hasattr(element, "unadapt") and element.unadapt() is not element
+    adapter: Adapter | None = element if is_adapted else None  # type: ignore
+    wire = element.unadapt() if is_adapted else element
+
     if count is not None:
-        if not is_fixed_size(element):
+        if not isinstance(wire, FixedCodec):
             raise TypeError(
-                f"Fixed-count array requires fixed-size element type, got {element}"
+                f"Fixed-count array requires fixed-size element type, got {wire}"
             )
-        return _FixedArray(element, count)
-    return _VarArray(element)
+        return _FixedArray(element=wire, element_adapter=adapter, count=count)
+
+    # Variable-length: dispatch based on wire type
+    if isinstance(wire, FixedCodec):
+        return _DataArray(element=wire, element_adapter=adapter)
+
+    # Bytes array: element is Adapted wrapping a DataArray of U8
+    if isinstance(wire, _DataArray) and wire.element == U8:
+        # Determine the right adapter for _BytesArray:
+        # - Array(Bytes): adapter=Bytes, but _BytesArray works with bytes directly → no adapter
+        # - Array(String): adapter=String, py_encode converts str→bytes → keep adapter
+        if (
+            is_adapted
+            and isinstance(adapter, Adapter)
+            and isinstance(adapter.wire_type, Adapter)
+        ):
+            # Outer adapter wrapping Bytes (e.g., String wrapping Bytes)
+            return _BytesArray(element_adapter=adapter)
+        else:
+            # Direct Bytes adapter or _RawBytes → no adapter needed
+            return _BytesArray()
+
+    # HashBuffer (struct) arrays
+    if _is_hashbuffer(element):
+        return _BlockArray(element=element)
+
+    # BlockCodec arrays (nested variable arrays, etc.)
+    if isinstance(element, BlockCodec):
+        return _BlockArray(element=element, element_adapter=adapter)
+
+    raise TypeError(f"Cannot create array of: {element}")
 
 
 # Convenience aliases (Bytes defined after Adapted class below)
 _RawBytes = Array(U8)  # raw wire type: list[int]
-
-
-# ============================================================
-# Adapters
-# ============================================================
-
-
-@dataclass(frozen=True)
-class Adapted:
-    """Semantic adapter: transforms between Python type P and wire type W.
-
-    The wire_type handles serialization; the adapter handles semantics.
-    """
-
-    wire_type: t.Any  # underlying wire type
-    py_encode: t.Callable  # Python value → wire value
-    py_decode: t.Callable  # wire value → Python value
-
-    def encode_value(self, value: t.Any, store: BlockStore) -> TableField:
-        wire_val = self.py_encode(value)
-        return self.wire_type.encode_value(wire_val, store)
-
-    def decode_value(self, table: TableBlock, index: int, store: BlockStore) -> t.Any:
-        wire_val = self.wire_type.decode_value(table, index, store)
-        if wire_val is None:
-            return None
-        return self.py_decode(wire_val)
-
-
-# Predefined adapters
-Bool = Adapted(U8, int, bool)
-Bytes = Adapted(_RawBytes, list, bytes)  # Python bytes ↔ wire list[int]
-String = Adapted(Bytes, lambda s: s.encode("utf-8"), lambda b: b.decode("utf-8"))
-
-
-def EnumType(enum_cls: type[Enum], repr: Primitive = U8) -> Adapted:
-    """Create an adapter for an Enum type stored as a primitive."""
-    return Adapted(repr, lambda e: e.value, enum_cls)
+Bytes = Adapter(_RawBytes, list, bytes)  # Python bytes ↔ wire list[int]
+String = Adapter.adapt(Bytes, lambda s: s.encode("utf-8"), lambda b: b.decode("utf-8"))
 
 
 # ============================================================
@@ -353,7 +530,7 @@ def EnumType(enum_cls: type[Enum], repr: Primitive = U8) -> Adapted:
 
 def _wire_type(typ: t.Any) -> t.Any:
     """Get the underlying wire type, unwrapping Adapted."""
-    if isinstance(typ, Adapted):
+    if isinstance(typ, Adapter):
         return _wire_type(typ.wire_type)
     return typ
 
@@ -361,101 +538,28 @@ def _wire_type(typ: t.Any) -> t.Any:
 def is_fixed_size(typ: t.Any) -> bool:
     """Check if a type has a known fixed byte size."""
     typ = _wire_type(typ)
-    if isinstance(typ, Primitive):
-        return True
-    if isinstance(typ, _FixedArray):
-        return True
-    return False
-
-
-def fixed_size(typ: t.Any) -> int:
-    """Get the fixed byte size of a type. Raises if not fixed-size."""
-    typ = _wire_type(typ)
-    if isinstance(typ, Primitive):
-        return typ.size
-    if isinstance(typ, _FixedArray):
-        return typ.size
-    raise TypeError(f"Type {typ} is not fixed-size")
+    return isinstance(typ, FixedCodec)
 
 
 def alignment_of(typ: t.Any) -> int:
     """Get the alignment requirement of a type."""
     typ = _wire_type(typ)
-    if isinstance(typ, Primitive):
+    if isinstance(typ, FixedCodec):
         return typ.alignment
     if isinstance(typ, _FixedArray):
         return alignment_of(typ.element)
     if isinstance(typ, _VarArray):
-        elem = _wire_type(typ.element)
-        if is_fixed_size(elem):
-            return max(alignment_of(elem), 2)
+        if isinstance(typ, _DataArray):
+            return max(typ.element.alignment, 2)
         return 2
     if _is_hashbuffer(typ):
         return 2
     raise TypeError(f"Cannot determine alignment for: {typ}")
 
 
-def _is_hashbuffer(typ: t.Any) -> bool:
+def _is_hashbuffer(typ: t.Any) -> t.TypeGuard[type[HashBuffer]]:
     """Check if a type is a HashBuffer subclass."""
     return isinstance(typ, type) and issubclass(typ, HashBuffer)
-
-
-# ============================================================
-# Primitive encode/decode helpers
-# ============================================================
-
-
-def _encode_primitive(prim: Primitive, value: int | float) -> bytes:
-    """Encode a primitive value to bytes."""
-    if prim.is_float:
-        fmt = "<f" if prim == Primitive.F32 else "<d"
-        return struct.pack(fmt, value)
-    return int(value).to_bytes(prim.size, "little", signed=prim.signed)
-
-
-def _decode_primitive(prim: Primitive, data: bytes) -> int | float:
-    """Decode a primitive value from bytes."""
-    if prim.is_float:
-        fmt = "<f" if prim == Primitive.F32 else "<d"
-        return struct.unpack(fmt, data)[0]
-    return int.from_bytes(data, "little", signed=prim.signed)
-
-
-def _encode_fixed_array(fat: _FixedArray, value: list) -> bytes:
-    """Encode a fixed-size array to flat bytes."""
-    if len(value) != fat.count:
-        raise ValueError(f"FixedArray expects {fat.count} elements, got {len(value)}")
-    elem = fat.element
-    if isinstance(elem, Adapted):
-        # Adapt each element, then encode via wire type
-        wire_elem = _wire_type(elem)
-        adapted = [elem.py_encode(v) for v in value]
-        return _encode_fixed_array(_FixedArray(wire_elem, fat.count), adapted)
-    if isinstance(elem, Primitive):
-        return b"".join(_encode_primitive(elem, v) for v in value)
-    if isinstance(elem, _FixedArray):
-        return b"".join(_encode_fixed_array(elem, v) for v in value)
-    raise TypeError(f"Cannot encode fixed array of: {elem}")
-
-
-def _decode_fixed_array(fat: _FixedArray, data: bytes) -> list:
-    """Decode a fixed-size array from flat bytes."""
-    elem = fat.element
-    if isinstance(elem, Adapted):
-        wire_elem = _wire_type(elem)
-        wire_result = _decode_fixed_array(_FixedArray(wire_elem, fat.count), data)
-        return [elem.py_decode(v) for v in wire_result]
-    if isinstance(elem, Primitive):
-        return [
-            _decode_primitive(elem, data[i * elem.size : (i + 1) * elem.size])
-            for i in range(fat.count)
-        ]
-    if isinstance(elem, _FixedArray):
-        return [
-            _decode_fixed_array(elem, data[i * elem.size : (i + 1) * elem.size])
-            for i in range(fat.count)
-        ]
-    raise TypeError(f"Cannot decode fixed array of: {elem}")
 
 
 # ============================================================
@@ -465,15 +569,14 @@ def _decode_fixed_array(fat: _FixedArray, data: bytes) -> list:
 
 def _resolve_block_or_link(
     table: TableBlock, index: int, store: BlockStore
-) -> bytes | None:
-    """Get block data from a BLOCK or LINK entry."""
+) -> Block | None:
+    """Get block from a BLOCK or LINK vtable entry, resolving links."""
     result = table.get_block(index)
     if result is None:
         return None
     if isinstance(result, Link):
-        sb = store[result.digest]
-        return sb.data
-    return result.encode()
+        return store.fetch(result.digest)
+    return result
 
 
 # ============================================================
@@ -591,10 +694,10 @@ class HashBuffer:
         cls, table: TableBlock, index: int, store: BlockStore
     ) -> t.Self | None:
         """Decode a HashBuffer from a TABLE field."""
-        data = _resolve_block_or_link(table, index, store)
-        if data is None:
+        block = _resolve_block_or_link(table, index, store)
+        if block is None:
             return None
-        return cls.decode(data, store)
+        return cls.decode(block.encode(), store)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, self.__class__):

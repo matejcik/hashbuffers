@@ -2,23 +2,8 @@
 
 import hashlib
 import hmac
-from typing import NamedTuple
 
-from .codec import Link
-
-
-class StoredBlock(NamedTuple):
-    """A stored block with its link and alignment.
-
-    Universal return type for all block-building operations.
-    - data: raw encoded block bytes (for transmission or embedding)
-    - link: Link(digest, limit) for content addressing and parent references
-    - alignment: block alignment requirement (for fitting into parent TABLE)
-    """
-
-    data: bytes
-    link: Link
-    alignment: int
+from .codec import Block, decode_block
 
 
 class BlockStore:
@@ -29,27 +14,26 @@ class BlockStore:
 
     def __init__(self, key: bytes) -> None:
         self.key = key
-        self._blocks: dict[bytes, StoredBlock] = {}
+        self.blocks: dict[bytes, bytes] = {}
 
-    def store(
-        self, block_data: bytes, *, limit: int, alignment: int = 2
-    ) -> StoredBlock:
+    def store(self, block: Block) -> bytes:
         """Store a block, return StoredBlock with digest and metadata."""
+        block_data = block.encode()
         digest = hmac.new(self.key, block_data, hashlib.sha256).digest()
-        sb = StoredBlock(block_data, Link(digest, limit), alignment)
-        self._blocks[digest] = sb
-        return sb
+        self.blocks[digest] = block_data
+        return digest
 
-    def __getitem__(self, digest: bytes) -> StoredBlock:
-        """Retrieve a block by digest. Verifies HMAC on retrieval."""
-        sb = self._blocks[digest]
-        expected = hmac.new(self.key, sb.data, hashlib.sha256).digest()
+    def fetch(self, digest: bytes) -> Block:
+        block_data = self.blocks.get(digest)
+        if block_data is None:
+            raise KeyError(f"Block {digest} not found in store")
+        expected = hmac.new(self.key, block_data, hashlib.sha256).digest()
         if not hmac.compare_digest(digest, expected):
             raise ValueError("HMAC verification failed")
-        return sb
+        return decode_block(block_data)
 
     def __contains__(self, digest: bytes) -> bool:
-        return digest in self._blocks
+        return digest in self.blocks
 
     def __len__(self) -> int:
-        return len(self._blocks)
+        return len(self.blocks)
