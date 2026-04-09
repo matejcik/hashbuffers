@@ -347,7 +347,6 @@ class TableArray(TreeArray[T, Block, Block | Link]):
 def build_bytestring_tree(
     data: bytes,
     store: BlockStore,
-    max_block_size: int = SIZE_MAX,
 ) -> BlockEntry:
     """Build a bytestring tree from a list of bytes."""
     if not data:
@@ -355,19 +354,18 @@ def build_bytestring_tree(
         return BlockEntry.from_data(block, 1, 0)
 
     blocks: list[BlockEntry] = []
-    max_data_size = max_block_size - 2
+    max_data_size = SIZE_MAX - 2
     for i in range(0, len(data), max_data_size):
         chunk = data[i : i + max_data_size]
         block = DataBlock.build(chunk)
         blocks.append(BlockEntry.from_data(block, 1, len(chunk)))
-    return linktree_reduce(blocks, store, max_block_size)
+    return linktree_reduce(blocks, store)
 
 
 def build_data_array(
     elements: list[bytes],
     elem_align: int,
     store: BlockStore,
-    max_block_size: int = SIZE_MAX,
 ) -> BlockEntry:
     """Build a DATA array, possibly spanning multiple blocks as a link tree.
 
@@ -380,7 +378,7 @@ def build_data_array(
     elem_size = len(elements[0])
     padded = padded_element_size(elem_size, elem_align)
     start_offset = max(elem_align, 2)
-    max_elems_per_block = (max_block_size - start_offset) // padded
+    max_elems_per_block = (SIZE_MAX - start_offset) // padded
 
     if max_elems_per_block == 0:
         raise ValueError(
@@ -393,13 +391,12 @@ def build_data_array(
         block = DataBlock.build_array(list(chunk), align=elem_align)
         blocks.append(BlockEntry(block, elem_align, len(chunk)))
 
-    return linktree_reduce(blocks, store, max_block_size)
+    return linktree_reduce(blocks, store)
 
 
 def build_bytestring_array(
     elements: t.Sequence[bytes],
     store: BlockStore,
-    max_block_size: int = SIZE_MAX,
 ) -> BlockEntry:
     """Build a SLOTS array, possibly spanning multiple blocks as a link tree."""
     if not elements:
@@ -423,15 +420,15 @@ def build_bytestring_array(
     for elem in elements:
         # Check if this element can fit alone in a block:
         # header + offset + sentinel + element
-        if 2 + 4 + len(elem) > max_block_size:
+        if 2 + 4 + len(elem) > SIZE_MAX:
             seal_current()
-            bytestring_tree = build_bytestring_tree(elem, store, max_block_size)
+            bytestring_tree = build_bytestring_tree(elem, store)
             table = Table([bytestring_tree])
             blocks.append(table.build_entry(store))
             continue
 
         # Check if adding this element and its offset would exceed block size
-        if current_block_size + 2 + len(elem) > max_block_size:
+        if current_block_size + 2 + len(elem) > SIZE_MAX:
             # Seal current block
             seal_current()
 
@@ -441,13 +438,12 @@ def build_bytestring_array(
     # Seal final block
     seal_current()
 
-    return linktree_reduce(blocks, store, max_block_size)
+    return linktree_reduce(blocks, store)
 
 
 def build_table_array(
     elements: t.Sequence[TableEntry],
     store: BlockStore,
-    max_block_size: int = SIZE_MAX,
 ) -> BlockEntry:
     """Build a TABLE array of complex elements.
 
@@ -466,7 +462,7 @@ def build_table_array(
         if not current_table.entries:
             return
         result_blocks.append(current_table.build_entry(store))
-        current_table = Table([], max_block_size=max_block_size)
+        current_table = Table([])
 
     for elem in elements:
         try:
@@ -487,13 +483,12 @@ def build_table_array(
 
     seal_current()
 
-    return linktree_reduce(result_blocks, store, max_block_size)
+    return linktree_reduce(result_blocks, store)
 
 
 def linktree_reduce(
     leaf_blocks: list[BlockEntry],
     store: BlockStore,
-    max_block_size: int = SIZE_MAX,
 ) -> BlockEntry:
     """Reduces a non-empty list to a single root block.
 
@@ -508,7 +503,7 @@ def linktree_reduce(
 
     # How many links fit in one LINKS block?
     # LINKS block: 4 bytes header + 36 * n links
-    max_links_per_block = (max_block_size - 4) // Link.SIZE
+    max_links_per_block = (SIZE_MAX - 4) // Link.SIZE
 
     tail_size = len(leaf_blocks) % max_links_per_block
     if len(leaf_blocks) > max_links_per_block and tail_size > 0:
@@ -535,4 +530,4 @@ def linktree_reduce(
     if len(inner_blocks) == 1:
         return inner_blocks[0]
 
-    return linktree_reduce(inner_blocks, store, max_block_size)
+    return linktree_reduce(inner_blocks, store)

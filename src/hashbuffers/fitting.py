@@ -213,21 +213,14 @@ class EntryPosition(t.NamedTuple):
 class Table:
     entries: list[TableEntry]
     alignment: int
-    max_block_size: int
 
     placement: dict[int, int] | None = None
     heap_size: int
 
-    def __init__(
-        self,
-        entries: list[TableEntry],
-        *,
-        max_block_size: int = SIZE_MAX,
-    ) -> None:
+    def __init__(self, entries: list[TableEntry]) -> None:
         self.entries = entries
-        self.max_block_size = max_block_size
         self.alignment = 2
-        self.placement = {}
+        self.placement = None
         self.heap_size = 0
 
     def alignment_pack(self) -> None:
@@ -243,7 +236,7 @@ class Table:
         ]
 
         heap_start = TableBlock.heap_start(len(self.entries))
-        heap_size = self.max_block_size - heap_start
+        heap_size = SIZE_MAX - heap_start
         current_offset = 0
 
         max_align = 2
@@ -341,9 +334,9 @@ class Table:
 
         Generates the heap bytes and the vtable, and returns the TABLE block.
         """
-        if not self.placement:
+        if self.placement is None:
             self.fit(store)
-            assert self.placement
+            assert self.placement is not None
         heap_start = TableBlock.heap_start(len(self.entries))
         vtable = []
         heap = bytearray(self.heap_size)

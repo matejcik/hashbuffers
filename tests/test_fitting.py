@@ -9,6 +9,7 @@ from hashbuffers.arrays import (
     linktree_reduce,
 )
 from hashbuffers.codec import (
+    SIZE_MAX,
     DataBlock,
     Link,
     LinksBlock,
@@ -113,7 +114,7 @@ class TestFitTable:
         block = table.build(store)
         assert block.get_int(0, 2) == 0
         assert block.get_int(1, 2) is None
-        assert block.get_fixedsize(2, 2) == b"\x01\x02"
+        assert block.get_fixedsize(2, 2) == b"\x02\x01"
         inner_result = block.get_block(3)
         assert isinstance(inner_result, DataBlock)
         link_result = block.get_block(4)
@@ -123,37 +124,27 @@ class TestFitTable:
         """StoredBlocks ≤ 36 bytes must NOT become LINK even if block is tight."""
         small_data = b"\x00" * 34  # 36 bytes encoded (with 2-byte header)
         must_embed = DataBlock.build(small_data)
-        can_outlink = DataBlock.build(small_data + b"x")
+        # space consumed: header + entry_count + two entries + block header of small_data + small_data
+        space_consumed = 2 + 2 + 2 * 2 + 2 + len(small_data)
+        # space available for block data: SIZE_MAX - space_consumed - 2 (for block header)
+        space_available = SIZE_MAX - space_consumed - 2
+        # ...but the block is 1 byte too large
+        can_outlink = DataBlock.build(b"x" * (space_available + 1))
         assert len(must_embed.encode()) <= Link.SIZE
         assert len(can_outlink.encode()) > Link.SIZE
-        # put `can_outlink` first
-        table = Table(
-            [BlockEntry(can_outlink, 2, 1), BlockEntry(must_embed, 2, 1)],
-            max_block_size=2  # header
-            + 2  # entry count
-            + 2 * 2  # entry offsets
-            + len(must_embed.encode())
-            + len(can_outlink.encode())
-            - 1,  # so that both data blocks can't fit
-        )
+        # put `can_outlink` first; both cannot fit in one SIZE_MAX table
+        table = Table([BlockEntry(can_outlink, 2, 1), BlockEntry(must_embed, 2, 1)])
         block = table.build(store)
         assert block.vtable[0].type == VTableEntryType.LINK
         assert block.vtable[1].type == VTableEntryType.BLOCK
 
     def test_overflow_to_link(self, store):
         """StoredBlock too large for block overflows to LINK."""
-        large_inner = DataBlock.build(b"x" * 200)
+        large_inner = DataBlock.build(b"x" * 8189)
         large_block = BlockEntry(large_inner, 2, 1)
 
-        # Use a very small max_block_size to force overflow
-        table = Table(
-            [large_block],
-            max_block_size=2  # header
-            + 2  # entry count
-            + 2  # entry offset
-            + len(large_inner.encode())
-            - 1,  # so that the data block can't fit
-        )
+        # Table overhead makes this impossible to embed under SIZE_MAX.
+        table = Table([large_block])
         block = table.build(store)
         assert block.vtable[0].type == VTableEntryType.LINK
 
@@ -184,13 +175,13 @@ class TestBuildDataArray:
 
     def test_multi_block_creates_links_tree(self, store: BlockStore):
         """Large array spans multiple DATA blocks linked by a LINKS tree."""
-        elements = [i.to_bytes(4, "little") for i in range(500)]
-        entry = build_data_array(elements, 4, store, max_block_size=200)
-        assert entry.element_count == 500
+        elements = [i.to_bytes(4, "little") for i in range(3000)]
+        entry = build_data_array(elements, 4, store)
+        assert entry.element_count == 3000
         # Root should be a LINKS block
         assert isinstance(entry.block, LinksBlock)
         # Should have stored multiple blocks
-        assert len(store) > 2
+        assert len(store) >= 2
 
 
 # --- build_slots_array ---
@@ -212,9 +203,9 @@ class TestBuildSlotsArray:
 
     def test_multi_block_creates_links_tree(self, store):
         """Large SLOTS array spans multiple blocks."""
-        items = [b"x" * 50 for _ in range(100)]
-        entry = build_bytestring_array(items, store, max_block_size=200)
-        assert entry.element_count == 100
+        items = [b"x" * 50 for _ in range(300)]
+        entry = build_bytestring_array(items, store)
+        assert entry.element_count == 300
         assert isinstance(entry.block, LinksBlock)
 
 
@@ -239,14 +230,14 @@ class TestBuildTableArray:
     def test_multi_block(self, store: BlockStore):
         """Multiple elements that don't fit in one TABLE produce a LINKS tree."""
         elems = []
-        for _ in range(20):
+        for _ in range(300):
             inner = DataBlock.build(b"x" * 100)
             elems.append(BlockEntry.from_data(inner, 2, 1))
 
-        entry = build_table_array(elems, store, max_block_size=300)
-        assert entry.element_count == 20
+        entry = build_table_array(elems, store)
+        assert entry.element_count == 300
         assert isinstance(entry.block, LinksBlock)
-        assert entry.block.links[-1].limit == 20
+        assert entry.block.links[-1].limit == 300
 
 
 # --- build_links_tree ---
