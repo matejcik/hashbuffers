@@ -13,7 +13,7 @@ def test_encode_decode_slots_block():
     decoded = SlotsBlock.decode(encoded)
     assert decoded.get_entry(0) == b"slot1"
     assert decoded.get_entry(1) == b"slot2"
-    assert decoded.element_count == 2
+    assert decoded.element_count() == 2
 
 
 def test_slots_block_non_decreasing():
@@ -57,7 +57,7 @@ def test_slots_block_empty():
     """Empty SLOTS block (zero items) is valid."""
     block = SlotsBlock.build_slots([])
     decoded = SlotsBlock.decode(block.encode())
-    assert decoded.element_count == 0
+    assert decoded.element_count() == 0
     assert decoded.heap == b""
     # Should have exactly one offset (sentinel = 4)
     assert decoded.offsets == [4]

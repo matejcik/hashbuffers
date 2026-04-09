@@ -205,12 +205,17 @@ def _available_alignment(offset: int) -> int:
     return offset & -offset
 
 
+class EntryPosition(t.NamedTuple):
+    idx: int
+    entry: TableEntry
+
+
 class Table:
     entries: list[TableEntry]
     alignment: int
     max_block_size: int
 
-    placement: dict[TableEntry, int] | None = None
+    placement: dict[int, int] | None = None
     heap_size: int
 
     def __init__(
@@ -233,7 +238,9 @@ class Table:
         Returns the actual heap space consumed and the maximum alignment used.
         """
         # optimization: ignore inline fields
-        remaining = [f for f in self.entries if f.size() > 0]
+        remaining = [
+            EntryPosition(i, f) for i, f in enumerate(self.entries) if f.size() > 0
+        ]
 
         heap_start = TableBlock.heap_start(len(self.entries))
         heap_size = self.max_block_size - heap_start
@@ -241,22 +248,21 @@ class Table:
 
         max_align = 2
 
-        align_groups: dict[int, list[TableEntry]] = defaultdict(list)
-        placement: dict[TableEntry, int] = {}
+        align_groups: dict[int, list[EntryPosition]] = defaultdict(list)
+        placement: dict[int, int] = {}
 
         # group fields by their alignment
-        for f in remaining:
-            align = f.alignment()
+        for ep in remaining:
+            align = ep.entry.alignment()
             if align.bit_count() != 1:
                 # not a power-of-two, raise:
-                raise ValueError(
-                    f"Field {f} has invalid alignment: {align} (not a power-of-two)"
+                raise ValueError(f"Field {ep.idx} has invalid alignment: {align} (not a power-of-two)"
                 )
-            align_groups[align].append(f)
+            align_groups[align].append(ep)
 
         # sort within groups: (1) alignment-preserving, (2) smallest first
         for group in align_groups.values():
-            group.sort(key=lambda f: (f.preserves_alignment, f.size()))
+            group.sort(key=lambda f: (f.entry.preserves_alignment, f.entry.size()))
 
         while align_groups:
             # find the largest available alignment
@@ -276,21 +282,21 @@ class Table:
             group = align_groups[avail_align]
             assert group, "Group is empty, we failed to clean up after ourselves."
             # take the first field
-            field = group.pop(0)
+            ep = group.pop(0)
             if not group:
                 del align_groups[avail_align]
-            field_size = field.size()
+            field_size = ep.entry.size()
 
             # this is the smallest field that can fit here
             # but in general, we have to fit all fields. if _any_ field
             # doesn't fit, raise an error.
             if field_size > heap_size - current_offset:
                 raise ValueError(
-                    f"Field {field} doesn't fit in block at offset {current_offset}"
+                    f"Field {ep.idx} doesn't fit in block at offset {current_offset}"
                 )
             # place the field
-            placement[field] = current_offset
-            max_align = max(max_align, field.alignment())
+            placement[ep.idx] = current_offset
+            max_align = max(max_align, ep.entry.alignment())
             current_offset += field_size
 
         self.placement = placement
@@ -335,14 +341,14 @@ class Table:
 
         Generates the heap bytes and the vtable, and returns the TABLE block.
         """
-        if self.placement is None:
+        if not self.placement:
             self.fit(store)
-            assert self.placement is not None
+            assert self.placement
         heap_start = TableBlock.heap_start(len(self.entries))
         vtable = []
         heap = bytearray(self.heap_size)
-        for entry in self.entries:
-            heap_offset = self.placement.get(entry, 0)
+        for i, entry in enumerate(self.entries):
+            heap_offset = self.placement.get(i, 0)
             entry.place(heap, heap_offset)
             vtable.append(entry.vtable_entry(heap_start + heap_offset))
         return TableBlock.build(vtable, bytes(heap))
