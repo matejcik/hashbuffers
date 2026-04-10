@@ -26,7 +26,7 @@ from .store import BlockStore
 if t.TYPE_CHECKING:
     from trezorlib import protobuf
 
-    MT = t.TypeVar("MT", bound=protobuf.MessageType)
+MT = t.TypeVar("MT", bound="protobuf.MessageType")
 
 
 def _resolve_block_or_link(
