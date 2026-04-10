@@ -40,25 +40,21 @@ def _resolve_block_or_link(
     return result
 
 
-class _MessageRef(BlockDecoderType["protobuf.MessageType"]):
-    def __init__(self, msg_type: type["protobuf.MessageType"]) -> None:
+class _MessageRef(BlockDecoderType[MT]):
+    def __init__(self, msg_type: type[MT]) -> None:
         self.msg_type = msg_type
 
-    def encode(self, value: "protobuf.MessageType", store: BlockStore) -> TableEntry:
+    def encode(self, value: MT, store: BlockStore) -> TableEntry:
         return _serialize_entry(value, store)
 
-    def decode(
-        self, table: TableBlock, index: int, store: BlockStore
-    ) -> "protobuf.MessageType | None":
+    def decode(self, table: TableBlock, index: int, store: BlockStore) -> MT | None:
         block = _resolve_block_or_link(table, index, store)
         if block is None:
             return None
         return self.block_decoder(store)(block)
 
-    def block_decoder(
-        self, store: BlockStore
-    ) -> t.Callable[[Block], "protobuf.MessageType"]:
-        def decode_block(block: Block) -> "protobuf.MessageType":
+    def block_decoder(self, store: BlockStore) -> t.Callable[[Block], MT]:
+        def decode_block(block: Block) -> MT:
             if not isinstance(block, TableBlock):
                 raise ValueError(f"Expected TABLE block, got {type(block)}")
             return _deserialize_from_table(self.msg_type, block, store)
@@ -109,7 +105,8 @@ def _hb_type_for_field(field: "protobuf.Field") -> FieldType[t.Any]:
 def _serialize_entry(msg: "protobuf.MessageType", store: BlockStore) -> BlockEntry:
     mtype = msg.__class__
     if not mtype.FIELDS:
-        return Table([]).build_entry(store)
+        table = TableBlock.build([], b"")
+        return BlockEntry.from_table(table, 2)
 
     max_tag = max(mtype.FIELDS.keys())
     entries: list[TableEntry] = [NULL_ENTRY] * (max_tag + 1)
