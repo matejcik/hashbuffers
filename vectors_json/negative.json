@@ -1,0 +1,396 @@
+[
+  {
+    "name": "reserved_header_bit",
+    "description": "Block header has the reserved bit (bit 13) set",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "9362dd4451be7dce1941d347e964041e759158335e917da1e6348a317172e6b7",
+    "store": {
+      "9362dd4451be7dce1941d347e964041e759158335e917da1e6348a317172e6b7": "062001000000"
+    },
+    "error": "Reserved bit set in block header"
+  },
+  {
+    "name": "table_too_small",
+    "description": "TABLE block with declared size 3 (minimum is 4)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "e6490babf0b75ba927cc6895f3e571325663d64df20c2257a4ffe0aa8094a3ff",
+    "store": {
+      "e6490babf0b75ba927cc6895f3e571325663d64df20c2257a4ffe0aa8094a3ff": "030000"
+    },
+    "error": "TABLE block too small (size < 4)"
+  },
+  {
+    "name": "vtable_reserved_bits",
+    "description": "TABLE vtable header has non-zero reserved bits",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "09e83535e3468a994976dc45f1b6f3201ea2220f83cf7ce05180557aab8fec73",
+    "store": {
+      "09e83535e3468a994976dc45f1b6f3201ea2220f83cf7ce05180557aab8fec73": "060001200000"
+    },
+    "error": "Reserved bits in TABLE vtable header are not zero"
+  },
+  {
+    "name": "entry_offset_oob",
+    "description": "DIRECT vtable entry with offset 100 in a block of size 10",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "b6549fd1dee7a870182bfa9b1046d20e8bca6162cd204a0e8b72aa0e225db13f",
+    "store": {
+      "b6549fd1dee7a870182bfa9b1046d20e8bca6162cd204a0e8b72aa0e225db13f": "0a00010064a000000000"
+    },
+    "error": "Vtable entry offset out of bounds"
+  },
+  {
+    "name": "link_not_4_aligned",
+    "description": "LINK entry at offset 6 which is not 4-byte aligned",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "991e8c064370b5c3ae4a9654bc24c41f5624743ecb28922681f60be644f5a4d4",
+    "store": {
+      "991e8c064370b5c3ae4a9654bc24c41f5624743ecb28922681f60be644f5a4d4": "2c00010006e00000000000000000000000000000000000000000000000000000000000000000010000000000"
+    },
+    "error": "LINK entry is not 4-byte aligned"
+  },
+  {
+    "name": "link_limit_zero",
+    "description": "LINK entry with limit=0 (reserved, must be >= 1)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "1cfe54c8ccca2086684abbac09229461bd4ea151d5d215e8cd05ebcb15e6f8fd",
+    "store": {
+      "1cfe54c8ccca2086684abbac09229461bd4ea151d5d215e8cd05ebcb15e6f8fd": "2c00010008e00000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "error": "Link limit must not be 0"
+  },
+  {
+    "name": "block_not_2_aligned",
+    "description": "BLOCK entry at odd offset 9 (must be 2-byte aligned)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u8"
+            },
+            {
+              "index": 1,
+              "name": "inner",
+              "type": "Inner"
+            }
+          ]
+        },
+        "Inner": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "v",
+              "type": "u8"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "0462e0749b1c179a4efcd12d125a064d874ff1d0472492ed4bcdf94ca1a4ac9b",
+    "store": {
+      "0462e0749b1c179a4efcd12d125a064d874ff1d0472492ed4bcdf94ca1a4ac9b": "0f00020008a009c042040000000000"
+    },
+    "error": "BLOCK entry is not 2-byte aligned"
+  },
+  {
+    "name": "subblock_exceeds_parent",
+    "description": "Sub-block at offset 6 claims size 100 but parent is only ~12 bytes",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "ebfa48f05936be6a02f63d04baa2ef7ec74139316f8d88299eff5d74810ed5f3",
+    "store": {
+      "ebfa48f05936be6a02f63d04baa2ef7ec74139316f8d88299eff5d74810ed5f3": "0c00010006c0640000000000"
+    },
+    "error": "Sub-block exceeds parent block"
+  },
+  {
+    "name": "slots_bad_sentinel",
+    "description": "SLOTS block sentinel offset (8) does not match block size (10)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "data",
+              "type": "bytes"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "fbe2ad620fe71a1cdec5a1480fef014a6e030f54a703de3769aedafa32b487e3",
+    "store": {
+      "fbe2ad620fe71a1cdec5a1480fef014a6e030f54a703de3769aedafa32b487e3": "0a800600080061626364"
+    },
+    "error": "SLOTS sentinel offset does not match block size"
+  },
+  {
+    "name": "slots_decreasing_offsets",
+    "description": "SLOTS block with non-monotonic offset sequence [8, 10, 6]",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "data",
+              "type": "bytes[]"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "9d0240d13e34df83ecc98c161dedabd14d84bfbb33d43d5d22dd1d404cfe3e98",
+    "store": {
+      "9d0240d13e34df83ecc98c161dedabd14d84bfbb33d43d5d22dd1d404cfe3e98": "0c8008000a00060061626364"
+    },
+    "error": "SLOTS offsets are not non-decreasing"
+  },
+  {
+    "name": "links_reserved_nonzero",
+    "description": "LINKS block with non-zero reserved field",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "628d5e67fd8e2f465767203df7f45f59b35aa43bd2a900b95a3f17ba13917875",
+    "store": {
+      "628d5e67fd8e2f465767203df7f45f59b35aa43bd2a900b95a3f17ba13917875": "28c0ffff000000000000000000000000000000000000000000000000000000000000000005000000"
+    },
+    "error": "LINKS block reserved field is not zero"
+  },
+  {
+    "name": "links_not_increasing",
+    "description": "LINKS block with non-increasing limits [5, 3]",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "0393c1461e06910224e7cae03779fe6d02bcbff02c440e81001396476b09ed63",
+    "store": {
+      "0393c1461e06910224e7cae03779fe6d02bcbff02c440e81001396476b09ed63": "4cc00000000000000000000000000000000000000000000000000000000000000000000005000000010101010101010101010101010101010101010101010101010101010101010103000000"
+    },
+    "error": "LINKS limits are not strictly increasing"
+  },
+  {
+    "name": "wrong_block_type",
+    "description": "Root block is DATA but schema expects TABLE (struct)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "4de73046b60746f8e21d2b390396c46fe0e6e3a6531808dad29a4619a6eaf050",
+    "store": {
+      "4de73046b60746f8e21d2b390396c46fe0e6e3a6531808dad29a4619a6eaf050": "04400000"
+    },
+    "error": "Expected TABLE block, got DATA"
+  },
+  {
+    "name": "fixed_array_direct_misaligned",
+    "description": "DIRECT entry for u32[3] at offset 6 (not 4-byte aligned)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "vec",
+              "type": "u32[3]"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "eec0ef802eec0556f9a013a14dc11dc3707cd34a66b8cdba89f88a46a988a579",
+    "store": {
+      "eec0ef802eec0556f9a013a14dc11dc3707cd34a66b8cdba89f88a46a988a579": "1200010006a0000000000000000000000000"
+    },
+    "error": "Fixed array DIRECT entry is not properly aligned"
+  },
+  {
+    "name": "fixed_array_block_misaligned",
+    "description": "BLOCK entry for u32[3] at offset 9 (not aligned to element alignment 4)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u8"
+            },
+            {
+              "index": 1,
+              "name": "vec",
+              "type": "u32[3]"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "726d91b26f95ff2545b7888ccb8b0799da9021672f68a865a0a6242e29230e3a",
+    "store": {
+      "726d91b26f95ff2545b7888ccb8b0799da9021672f68a865a0a6242e29230e3a": "1a00020008a009c0421040000000000000000000000000000000"
+    },
+    "error": "Fixed array BLOCK entry is not properly aligned"
+  }
+]

@@ -5,7 +5,6 @@ import hmac
 
 from .codec import Block, decode_block
 
-
 class BlockStore:
     """Content-addressed block store using HMAC-SHA256.
 
@@ -16,12 +15,15 @@ class BlockStore:
         self.key = key
         self.blocks: dict[bytes, bytes] = {}
 
-    def store(self, block: Block) -> bytes:
-        """Store a block, return StoredBlock with digest and metadata."""
-        block_data = block.encode()
+    def store_bytes(self, block_data: bytes) -> bytes:
+        """Store raw block bytes, return digest."""
         digest = hmac.new(self.key, block_data, hashlib.sha256).digest()
         self.blocks[digest] = block_data
         return digest
+
+    def store(self, block: Block) -> bytes:
+        """Store a block, return digest."""
+        return self.store_bytes(block.encode())
 
     def fetch(self, digest: bytes) -> Block:
         block_data = self.blocks.get(digest)
