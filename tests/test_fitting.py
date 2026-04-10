@@ -139,6 +139,31 @@ class TestFitTable:
         block = table.build(store)
         assert block.vtable[0].type == VTableEntryType.LINK
 
+    def test_block_entry_clamps_alignment_to_2(self, store):
+        """BlockEntry must have alignment >= 2, since embedded blocks are always 2-aligned."""
+        inner = DataBlock.build(b"")
+        entry = BlockEntry(inner, 1, 0)
+        assert entry.alignment() == 2
+
+    def test_block_entry_align1_not_placed_at_odd_offset(self, store):
+        """A BlockEntry with data_alignment=1 must still be 2-aligned on the heap.
+
+        Without clamping, the packer would treat it as 1-aligned, and a
+        preceding odd-sized DIRECT field could push it to an odd offset,
+        producing a TABLE that fails codec validation.
+        """
+        # 3-byte DIRECT field: odd size, so the next 1-aligned field would
+        # land at an odd offset (heap_start is always even).
+        odd_direct = DirectEntry(b"\x01\x02\x03", 1, 1)
+        # BlockEntry with data_alignment=1 — the clamp to 2 is what saves us.
+        inner = DataBlock.build(b"\xaa")
+        block_entry = BlockEntry(inner, 1, 1)
+        table = Table([NULL_ENTRY, odd_direct, block_entry])
+        block = table.build(store)
+        # The TABLE must survive its own validation (which checks 2-alignment
+        # of all BLOCK entries).
+        block.validate()
+
     def test_alignment_tracking(self, store):
         """Block alignment is the max of all field alignments."""
         field = DirectEntry(b"\x00" * 8, 8, 1)

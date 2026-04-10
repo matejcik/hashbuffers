@@ -136,11 +136,12 @@ class DirectEntry(TableEntry):
 @dataclass
 class BlockEntry(TableEntry):
     block: Block
-    _alignment: int
+    data_alignment: int
     element_count: int
 
     def alignment(self) -> int:
-        return self._alignment
+        # the alignment of an embedded block is always at least 2
+        return max(self.data_alignment, 2)
 
     def size(self) -> int:
         return self.block.size
