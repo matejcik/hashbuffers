@@ -285,7 +285,6 @@ class HashBuffer:
         fields: dict[str, Field[t.Any]] = {}
         seen_indices: dict[int, str] = {}
         struct_fields: list[StructField[t.Any]] = []
-        max_index = -1
 
         for attr_name, attr_value in cls.__dict__.items():
             if not isinstance(attr_value, Field):
@@ -306,7 +305,6 @@ class HashBuffer:
                     required=attr_value.required,
                 )
             )
-            max_index = max(max_index, attr_value.index)
 
         cls._hb_fields = fields
         cls._hb_struct = StructType(struct_fields)

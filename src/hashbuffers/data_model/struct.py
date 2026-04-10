@@ -62,9 +62,6 @@ class LazyStructMapping(Mapping[str, t.Any]):
 
 class StructType(BlockDecoderType[Mapping[str, t.Any]]):
     def __init__(self, fields: t.Collection[StructField[t.Any]]) -> None:
-        if not fields:
-            raise ValueError("Empty structs are not supported")
-
         self.fields = fields
         names = set(field.name for field in fields)
         indices = set(field.index for field in fields)
@@ -72,8 +69,7 @@ class StructType(BlockDecoderType[Mapping[str, t.Any]]):
             raise ValueError("Duplicate field indices or names")
 
     def encode(self, value: Mapping[str, t.Any], store: BlockStore) -> TableEntry:
-        max_index = max(e.index for e in self.fields)
-        entries: list[TableEntry] = [NULL_ENTRY] * (max_index + 1)
+        entries: dict[int, TableEntry] = {}
 
         for name in value:
             if not any(field.name == name for field in self.fields):
@@ -87,7 +83,12 @@ class StructType(BlockDecoderType[Mapping[str, t.Any]]):
                 else:
                     continue
             entries[field.index] = field.type.encode(field_value, store)
-        table = Table(entries)
+
+        max_index = max(entries.keys(), default=-1)
+        entries_list: list[TableEntry] = [NULL_ENTRY] * (max_index + 1)
+        for index, entry in entries.items():
+            entries_list[index] = entry
+        table = Table(entries_list)
         return table.build_entry(store)
 
     def decode(

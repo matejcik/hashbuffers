@@ -19,9 +19,10 @@ def make_struct_type(*fields):
 
 
 class TestStructTypeInit:
-    def test_empty_struct_rejected(self):
-        with pytest.raises(ValueError, match="Empty structs"):
-            StructType([])
+    def test_empty_struct(self, store):
+        st = StructType([])
+        assert len(st.fields) == 0
+        st.encode({}, store)
 
     def test_duplicate_indices_rejected(self):
         with pytest.raises(ValueError, match="Duplicate"):
