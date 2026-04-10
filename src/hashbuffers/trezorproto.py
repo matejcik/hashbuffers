@@ -84,14 +84,7 @@ def _hb_type_for_field(field: "protobuf.Field") -> FieldType[t.Any]:
     py_type = field.py_type
 
     if issubclass(py_type, IntEnum):
-        max_val = max(e.value for e in py_type) if len(py_type) > 0 else 0
-        if max_val < 256:
-            repr_prim = U8
-        elif max_val < 65536:
-            repr_prim = U16
-        else:
-            repr_prim = U32
-        enum_type = EnumType(py_type, repr_prim)
+        enum_type = EnumType(py_type, U16)
         if field.repeated:
             return Array(enum_type)
         return enum_type
@@ -108,8 +101,7 @@ def _serialize_entry(msg: "protobuf.MessageType", store: BlockStore) -> BlockEnt
         table = TableBlock.build([], b"")
         return BlockEntry.from_table(table, 2)
 
-    max_tag = max(mtype.FIELDS.keys())
-    entries: list[TableEntry] = [NULL_ENTRY] * (max_tag + 1)
+    entries: dict[int, TableEntry] = {}
 
     for ftag, field in mtype.FIELDS.items():
         value = getattr(msg, field.name, None)
@@ -119,9 +111,14 @@ def _serialize_entry(msg: "protobuf.MessageType", store: BlockStore) -> BlockEnt
             continue
         if field.repeated and not value:
             continue
-        entries[ftag] = _hb_type_for_field(field).encode(value, store)
+        entries[ftag - 1] = _hb_type_for_field(field).encode(value, store)
 
-    return Table(entries).build_entry(store)
+    max_index = max(entries.keys(), default=-1)
+    entries_list: list[TableEntry] = [NULL_ENTRY] * (max_index + 1)
+    for ftag, entry in entries.items():
+        entries_list[ftag] = entry
+
+    return Table(entries_list).build_entry(store)
 
 
 def serialize(msg: "protobuf.MessageType", store: BlockStore) -> bytes:
@@ -135,7 +132,7 @@ def _deserialize_from_table(
     kwargs: dict[str, t.Any] = {}
 
     for ftag, field in msg_type.FIELDS.items():
-        value = _hb_type_for_field(field).decode(table, ftag, store)
+        value = _hb_type_for_field(field).decode(table, ftag - 1, store)
 
         if value is None:
             if field.repeated:
