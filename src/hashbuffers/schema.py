@@ -21,30 +21,22 @@ from .data_model.array import (
     DataArrayType,
     FixedArrayType,
 )
-from .data_model.primitive import F32, F64, I8, I16, I32, I64, U8, U16, U32, U64
 from .data_model.struct import StructField, StructType
 from .fitting import BlockEntry, TableEntry
 from .store import BlockStore
 
-__all__ = [
-    "U8",
-    "U16",
-    "U32",
-    "U64",
-    "I8",
-    "I16",
-    "I32",
-    "I64",
-    "F32",
-    "F64",
-    "Bool",
-    "Bytes",
-    "String",
-    "Array",
-    "EnumType",
-    "Field",
-    "HashBuffer",
-]
+# primitive type reexports
+# isort: split
+from .data_model.primitive import F32 as F32
+from .data_model.primitive import F64 as F64
+from .data_model.primitive import I8 as I8
+from .data_model.primitive import I16 as I16
+from .data_model.primitive import I32 as I32
+from .data_model.primitive import I64 as I64
+from .data_model.primitive import U8 as U8
+from .data_model.primitive import U16 as U16
+from .data_model.primitive import U32 as U32
+from .data_model.primitive import U64 as U64
 
 T = t.TypeVar("T")
 U = t.TypeVar("U")
@@ -158,8 +150,9 @@ def _adapt(
     return _AdapterFieldType(inner, adapter)
 
 
-def EnumType(enum_cls: type[E], repr: FieldType[int] = U8) -> FieldType[E]:
-    return _adapt(repr, encode=lambda value: value.value, decode=enum_cls)
+def EnumType(enum_cls: type[E], repr: FixedFieldType[int] = U8) -> FixedFieldType[E]:
+    adapter = AdapterCodec(lambda value: value.value, enum_cls)
+    return _FixedAdapterFieldType(repr, adapter)
 
 
 Bool: FieldType[bool] = _adapt(U8, encode=int, decode=bool)
@@ -171,6 +164,14 @@ String: FieldType[str] = _adapt(
 )
 
 
+@t.overload
+def Array(element: FieldType[T], *, count: None = ...) -> FieldType[t.Sequence[T]]: ...
+@t.overload
+def Array(element: FieldType[T], *, count: int) -> FieldType[t.Sequence[T]]: ...
+@t.overload
+def Array(element: type[HB], *, count: None = ...) -> FieldType[t.Sequence[HB]]: ...
+@t.overload
+def Array(element: type[HB], *, count: int) -> FieldType[t.Sequence[HB]]: ...
 def Array(element: t.Any, *, count: int | None = None) -> FieldType[t.Any]:
     element_type = _field_type_from_annotation(element)
     if count is not None and isinstance(element_type, FixedFieldType):
@@ -199,6 +200,42 @@ def Array(element: t.Any, *, count: int | None = None) -> FieldType[t.Any]:
 
 class Field(t.Generic[T]):
     """Descriptor declaring one HashBuffer field."""
+
+    @t.overload
+    def __new__(
+        cls,
+        index: int,
+        type: FieldType[T],
+        *,
+        required: t.Literal[True],
+    ) -> T: ...
+    @t.overload
+    def __new__(
+        cls,
+        index: int,
+        type: FieldType[T],
+        *,
+        required: bool = ...,
+    ) -> T | None: ...
+    @t.overload
+    def __new__(
+        cls,
+        index: int,
+        type: type[HB],
+        *,
+        required: t.Literal[True],
+    ) -> HB: ...
+    @t.overload
+    def __new__(
+        cls,
+        index: int,
+        type: type[HB],
+        *,
+        required: bool = ...,
+    ) -> HB | None: ...
+
+    def __new__(cls, *args: t.Any, **kwargs: t.Any) -> t.Any:
+        return super().__new__(cls)
 
     def __init__(
         self,

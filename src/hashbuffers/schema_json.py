@@ -6,6 +6,7 @@ JSON schemas back into data_model type hierarchies.
 
 from __future__ import annotations
 
+from functools import cached_property
 import json
 import re
 import typing as t
@@ -22,26 +23,9 @@ from .data_model.array import (
     DataArrayType,
     FixedArrayType,
 )
-from .data_model.primitive import (
-    F32,
-    F64,
-    I8,
-    I16,
-    I32,
-    I64,
-    U8,
-    U16,
-    U32,
-    U64,
-    PrimitiveFloat,
-    PrimitiveInt,
-)
+from .data_model.adapter import AdapterCodec
+from .data_model.primitive import F32, F64, I8, I16, I32, I64, U8, U16, U32, U64
 from .data_model.struct import StructField, StructType
-from .schema import _AdapterFieldType  # pyright: ignore[reportAttributeAccessIssue]
-from .schema import (
-    _FixedAdapterFieldType,  # pyright: ignore[reportAttributeAccessIssue]
-)
-from .schema import _HashBufferFieldType  # pyright: ignore[reportAttributeAccessIssue]
 from .schema import (
     Array,
     Bool,
@@ -49,12 +33,14 @@ from .schema import (
     EnumType,
     HashBuffer,
     String,
+    _FixedAdapterFieldType,
+    _HashBufferFieldType,
 )
 from .store import BlockStore
 
 SCHEMA_VERSION = 1
 
-_PRIMITIVE_TO_STR: dict[FixedFieldType, str] = {
+_BUILTIN_TO_STR: dict[FieldType, str] = {
     U8: "u8",
     U16: "u16",
     U32: "u32",
@@ -65,11 +51,12 @@ _PRIMITIVE_TO_STR: dict[FixedFieldType, str] = {
     I64: "i64",
     F32: "f32",
     F64: "f64",
+    Bool: "bool",
+    Bytes: "bytes",
+    String: "str",
 }
 
-_STR_TO_PRIMITIVE: dict[str, FixedFieldType] = {
-    v: k for k, v in _PRIMITIVE_TO_STR.items()
-}
+_STR_TO_BUILTIN: dict[str, FieldType] = {v: k for k, v in _BUILTIN_TO_STR.items()}
 
 # ---- Type string parsing ----
 
@@ -123,7 +110,7 @@ class _SchemaWalker:
     def _dump_struct(self, cls: type[HashBuffer]) -> dict[str, t.Any]:
         fields: list[dict[str, t.Any]] = []
         for name, fld in cls._hb_fields.items():
-            ft = fld.field_type  # pyright: ignore[reportAttributeAccessIssue]
+            ft = fld.field_type
             field_dict: dict[str, t.Any] = {
                 "index": fld.index,
                 "name": name,
@@ -145,19 +132,19 @@ class _SchemaWalker:
 
         # Enum: _FixedAdapterFieldType wrapping an IntEnum
         if isinstance(ft, _FixedAdapterFieldType):
-            decode_fn = ft.adapter.decode  # pyright: ignore[reportAttributeAccessIssue]
+            decode_fn = ft.adapter.decode
             if isinstance(decode_fn, type) and issubclass(decode_fn, IntEnum):
-                inner = ft.inner  # pyright: ignore[reportAttributeAccessIssue]
+                inner = ft.inner
                 self._register_enum(decode_fn, inner)
                 return decode_fn.__name__
 
         # Primitives
-        if ft in _PRIMITIVE_TO_STR:
-            return _PRIMITIVE_TO_STR[ft]  # pyright: ignore[reportArgumentType]
+        if ft in _BUILTIN_TO_STR:
+            return _BUILTIN_TO_STR[ft]
 
         # Struct reference
         if isinstance(ft, _HashBufferFieldType):
-            cls = ft.hb_type  # pyright: ignore[reportAttributeAccessIssue]
+            cls = ft.hb_type
             if cls.__name__ not in self.structs:
                 self._pending.append(cls)
             return cls.__name__
@@ -198,7 +185,7 @@ class _SchemaWalker:
         name = enum_cls.__name__
         if name in self.enums:
             return
-        repr_str = _PRIMITIVE_TO_STR.get(inner, "u8")
+        repr_str = _BUILTIN_TO_STR.get(inner, "u8")
         self.enums[name] = {
             "repr": repr_str,
             "members": {m.name: m.value for m in enum_cls},
@@ -218,29 +205,54 @@ def dump_schema_json(root: type[HashBuffer], **kwargs: t.Any) -> str:
 # ---- Loader ----
 
 
+@dataclass(frozen=True)
+class FieldConstraints:
+    max_size: int | None = None
+
+
+@dataclass(frozen=True)
+class Struct:
+    type: StructType
+    field_constraints: dict[str, FieldConstraints]
+
+
+@dataclass(frozen=True)
+class JsonEnum:
+    repr: FixedFieldType[int]
+    members: dict[str, int]
+
+    def decode(self, value: int) -> str:
+        return next(name for name, v in self.members.items() if v == value)
+
+    def encode(self, value: str) -> int:
+        return self.members[value]
+
+    @cached_property
+    def field_type(self) -> FixedFieldType[str]:
+        adapter = AdapterCodec(self.encode, self.decode)
+        return _FixedAdapterFieldType(self.repr, adapter)
+
+
 @dataclass
 class LoadedSchema:
     """Result of loading a JSON schema."""
 
-    root: str
-    structs: dict[str, StructType]
-    enums: dict[str, type[IntEnum]] = field(default_factory=dict)
-    field_constraints: dict[str, dict[str, dict[str, t.Any]]] = field(
-        default_factory=dict
-    )
+    root_name: str
+    structs: dict[str, Struct]
+    enums: dict[str, JsonEnum]
 
     @property
-    def root_type(self) -> StructType:
-        return self.structs[self.root]
+    def root(self) -> Struct:
+        return self.structs[self.root_name]
 
     def decode_root(self, data: bytes, store: BlockStore) -> Mapping[str, t.Any]:
         table = TableBlock.decode(data)
-        return self.root_type.block_decoder(store)(table)
+        return self.root.type.block_decoder(store)(table)
 
 
 def _collect_struct_refs(type_str: str, enum_names: set[str]) -> set[str]:
     base, _dims = _parse_type_string(type_str)
-    if base in _STR_TO_PRIMITIVE or base in ("bool", "bytes", "str"):
+    if base in _STR_TO_BUILTIN:
         return set()
     if base in enum_names:
         return set()
@@ -281,33 +293,25 @@ def _topo_sort(structs: dict[str, t.Any], enum_names: set[str]) -> list[str]:
 
 def _resolve_base_type(
     name: str,
-    struct_types: dict[str, StructType],
-    enum_field_types: dict[str, FieldType[t.Any]],
+    structs: dict[str, Struct],
+    enums: dict[str, JsonEnum],
 ) -> FieldType[t.Any]:
-    if name in _STR_TO_PRIMITIVE:
-        return _STR_TO_PRIMITIVE[name]
-    if name == "bool":
-        return Bool
-    if name == "bytes":
-        return Bytes
-    if name == "str":
-        return String
-    if name in enum_field_types:
-        return enum_field_types[name]
-    if name in struct_types:
-        return struct_types[name]
+    if name in _STR_TO_BUILTIN:
+        return _STR_TO_BUILTIN[name]
+    if name in enums:
+        return enums[name].field_type
+    if name in structs:
+        return structs[name].type
     raise ValueError(f"Unknown type: {name!r}")
 
 
 def _build_field_type(
     type_str: str,
-    struct_types: dict[str, StructType],
-    enum_field_types: dict[str, FieldType[t.Any]],
+    structs: dict[str, Struct],
+    enums: dict[str, JsonEnum],
 ) -> FieldType[t.Any]:
     base_name, dims = _parse_type_string(type_str)
-    current: FieldType[t.Any] = _resolve_base_type(
-        base_name, struct_types, enum_field_types
-    )
+    current: FieldType[t.Any] = _resolve_base_type(base_name, structs, enums)
     for dim in dims:
         current = Array(current, count=dim)
     return current
@@ -334,32 +338,33 @@ def load_schema(data: dict[str, t.Any]) -> LoadedSchema:
         raise ValueError(f"Root struct {root_name!r} not found in structs")
 
     # 1. Build enums
-    enum_classes: dict[str, type[IntEnum]] = {}
-    enum_field_types: dict[str, FieldType[t.Any]] = {}
+    enums: dict[str, JsonEnum] = {}
     for name, edef in enum_defs.items():
         members = edef["members"]
-        enum_cls = IntEnum(name, members)  # type: ignore[misc]
-        enum_classes[name] = enum_cls  # type: ignore[assignment]
         repr_str = edef.get("repr", "u8")
-        repr_type = _STR_TO_PRIMITIVE.get(repr_str)
+        repr_type = _STR_TO_BUILTIN.get(repr_str)
         if repr_type is None:
             raise ValueError(f"Unknown enum repr type: {repr_str!r}")
-        enum_field_types[name] = EnumType(enum_cls, repr=repr_type)  # type: ignore[arg-type]
+        if not isinstance(repr_type, FixedFieldType):
+            raise ValueError(
+                f"Enum repr type must be a fixed field type: {repr_type!r}"
+            )
+        enums[name] = JsonEnum(repr_type, members)
 
     # 2. Topological sort
     enum_names = set(enum_defs.keys())
     order = _topo_sort(struct_defs, enum_names)
 
     # 3. Build struct types
-    struct_types: dict[str, StructType] = {}
-    field_constraints: dict[str, dict[str, dict[str, t.Any]]] = {}
+    structs: dict[str, Struct] = {}
 
     for struct_name in order:
         sdef = struct_defs[struct_name]
         struct_fields: list[StructField[t.Any]] = []
+        field_constraints: dict[str, FieldConstraints] = {}
         for fdef in sdef["fields"]:
             type_str: str = fdef["type"]
-            ft = _build_field_type(type_str, struct_types, enum_field_types)
+            ft = _build_field_type(type_str, structs, enums)
             required: bool = fdef.get("required", False)
 
             max_size = fdef.get("max_size")
@@ -377,10 +382,8 @@ def load_schema(data: dict[str, t.Any]) -> LoadedSchema:
                         f"(type '{type_str}'): use type aliases "
                         f"for per-level constraints"
                     )
-                field_constraints.setdefault(struct_name, {})[fdef["name"]] = {
-                    "max_size": max_size,
-                }
 
+            field_constraints[fdef["name"]] = FieldConstraints(max_size=max_size)
             struct_fields.append(
                 StructField(
                     index=fdef["index"],
@@ -389,14 +392,9 @@ def load_schema(data: dict[str, t.Any]) -> LoadedSchema:
                     required=required,
                 )
             )
-        struct_types[struct_name] = StructType(struct_fields)
+        structs[struct_name] = Struct(StructType(struct_fields), field_constraints)
 
-    return LoadedSchema(
-        root=root_name,
-        structs=struct_types,
-        enums=enum_classes,
-        field_constraints=field_constraints,
-    )
+    return LoadedSchema(root_name=root_name, structs=structs, enums=enums)
 
 
 def load_schema_json(json_str: str) -> LoadedSchema:

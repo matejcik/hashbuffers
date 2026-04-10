@@ -25,6 +25,7 @@ from hashbuffers.schema import (
     String,
 )
 from hashbuffers.schema_json import (
+    FieldConstraints,
     LoadedSchema,
     _parse_type_string,
     dump_schema,
@@ -186,7 +187,7 @@ class TestDumpSchema:
         json_str = dump_schema_json(Outer, indent=2)
         data = load_schema_json(json_str)
         assert isinstance(data, LoadedSchema)
-        assert data.root == "Outer"
+        assert data.root_name == "Outer"
 
 
 # ---- Loader tests ----
@@ -207,11 +208,11 @@ class TestLoadSchema:
             },
         }
         loaded = load_schema(data)
-        assert loaded.root == "Simple"
+        assert loaded.root_name == "Simple"
         assert "Simple" in loaded.structs
         st = loaded.structs["Simple"]
-        assert isinstance(st, StructType)
-        assert len(st.fields) == 2
+        assert isinstance(st.type, StructType)
+        assert len(st.type.fields) == 2
 
     def test_nested_structs(self):
         data = {
@@ -247,8 +248,7 @@ class TestLoadSchema:
         }
         loaded = load_schema(data)
         assert "Color" in loaded.enums
-        assert loaded.enums["Color"].RED == 0  # type: ignore[attr-defined]
-        assert loaded.enums["Color"].GREEN == 1  # type: ignore[attr-defined]
+        assert loaded.enums["Color"].members == {"RED": 0, "GREEN": 1, "BLUE": 2}
 
     def test_enum_default_repr(self):
         data = {
@@ -281,7 +281,7 @@ class TestLoadSchema:
         }
         loaded = load_schema(data)
         st = loaded.structs["Root"]
-        fields = {f.name: f for f in st.fields}
+        fields = {f.name: f for f in st.type.fields}
         assert isinstance(fields["ids"].type, DataArrayType)
         assert isinstance(fields["vec"].type, FixedArrayType)
         assert isinstance(fields["names"].type, BytestringArrayType)
@@ -302,7 +302,7 @@ class TestLoadSchema:
         }
         loaded = load_schema(data)
         st = loaded.structs["Root"]
-        fields = {f.name: f for f in st.fields}
+        fields = {f.name: f for f in st.type.fields}
         assert isinstance(fields["items"].type, BlockArrayType)
 
     def test_max_size_single_level(self):
@@ -323,7 +323,8 @@ class TestLoadSchema:
             },
         }
         loaded = load_schema(data)
-        assert loaded.field_constraints == {"Root": {"items": {"max_size": 128}}}
+        expected_constraints = FieldConstraints(max_size=128)
+        assert loaded.structs["Root"].field_constraints["items"] == expected_constraints
 
     def test_max_size_multi_level_error(self):
         data = {
@@ -461,8 +462,8 @@ class TestRoundTrip:
         wire = original.encode(store)
 
         decoded = loaded.decode_root(wire, store)
-        assert decoded["color"] == 1  # GREEN
-        assert decoded["priority"] == 3  # HIGH
+        assert decoded["color"] == "GREEN"
+        assert decoded["priority"] == "HIGH"
 
     def test_bool(self, store: BlockStore):
         schema = dump_schema(WithBool)
