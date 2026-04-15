@@ -21,7 +21,7 @@ from hashbuffers.data_model.array import (
     FixedArrayType,
 )
 from hashbuffers.data_model.struct import StructField, StructType
-from hashbuffers.schema_json import LoadedSchema, JsonEnum, load_schema
+from hashbuffers.schema_json import LoadedSchema, load_schema
 from hashbuffers.store import BlockStore
 
 VECTORS_DIR = Path(__file__).parent.parent / "vectors_json"
@@ -216,8 +216,7 @@ class TestPositiveVectors:
 
         assert root_digest.hex() == vector["root_digest"]
         expected_store = {
-            bytes.fromhex(k): bytes.fromhex(v)
-            for k, v in vector["store"].items()
+            bytes.fromhex(k): bytes.fromhex(v) for k, v in vector["store"].items()
         }
         assert encode_store.blocks == expected_store
 

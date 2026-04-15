@@ -21,6 +21,7 @@ from .codec import (
     VTableEntry,
 )
 from .store import BlockStore
+from .util import bit_length
 
 INLINE_MAX_UNSIGNED = (1 << 13) - 1  # 8191
 INLINE_MIN_SIGNED = -(1 << 12)  # -4096
@@ -84,11 +85,15 @@ class InlineIntEntry(InlineEntryBase):
     value: int
     signed: bool
 
+    def __post_init__(self) -> None:
+        if not self.fits(self.value, self.signed):
+            raise ValueError(f"Value {self.value} is too large for inline int")
+
     @staticmethod
     def fits(value: int, signed: bool) -> bool:
-        if signed:
-            return INLINE_MIN_SIGNED <= value <= INLINE_MAX_SIGNED
-        return 0 <= value <= INLINE_MAX_UNSIGNED
+        if not signed and value < 0:
+            return False
+        return bit_length(value, signed) <= 13
 
     def vtable_entry(self, offset: int) -> VTableEntry:
         # value & SIZE_MAX converts signed to unsigned
@@ -109,28 +114,37 @@ NULL_ENTRY = NullEntry()
 @dataclass
 class DirectEntry(TableEntry):
     data: bytes
-    _alignment: int
-    element_count: int
+
+    def __post_init__(self) -> None:
+        if len(self.data) not in (4, 8):
+            raise ValueError(f"Invalid data size: {len(self.data)} (must be 4 or 8)")
 
     def alignment(self) -> int:
-        return self._alignment
+        return len(self.data)
 
     def size(self) -> int:
         return len(self.data)
 
     def vtable_entry(self, offset: int) -> VTableEntry:
-        return VTableEntry.direct(offset)
+        if len(self.data) == 4:
+            return VTableEntry.direct4(offset)
+        if len(self.data) == 8:
+            return VTableEntry.direct8(offset)
+        raise RuntimeError("Unsupported direct size")
 
     def encode(self) -> bytes:
         return self.data
 
     @classmethod
-    def from_int(cls, value: int, size: int, signed: bool) -> t.Self:
-        return cls(value.to_bytes(size, "little", signed=signed), size, 1)
+    def from_int(cls, value: int, signed: bool) -> t.Self:
+        if not signed and value < 0:
+            raise OverflowError(f"Value {value} is negative for signed type")
+        if bit_length(value, signed) > 32:
+            return cls(value.to_bytes(8, "little", signed=signed))
+        return cls(value.to_bytes(4, "little", signed=signed))
 
-    def outlink(self, store: BlockStore) -> TableEntry:
-        data_block = DataBlock.build(self.data, align=self._alignment)
-        return LinkEntry(Link(store.store(data_block), self.element_count))
+    def can_outlink(self) -> bool:
+        return False
 
 
 @dataclass
@@ -193,10 +207,10 @@ class LinkEntry(TableEntry):
         raise ValueError("Links cannot be outlinked")
 
 
-def int_inline_or_direct(value: int, size: int, signed: bool) -> TableEntry:
+def int_inline_or_direct(value: int, signed: bool) -> TableEntry:
     if InlineIntEntry.fits(value, signed):
         return InlineIntEntry(value, signed)
-    return DirectEntry.from_int(value, size, signed)
+    return DirectEntry.from_int(value, signed)
 
 
 def _available_alignment(offset: int) -> int:
@@ -303,8 +317,8 @@ class Table:
 
         The position in the sequence is the vtable index. Accepts:
         - None → NULL
-        - IntField → auto INLINE/DIRECT based on value range
-        - DirectData → DIRECT on heap (mandatory)
+        - IntField → auto INLINE/DIRECT4/DIRECT8 based on value range
+        - DirectEntry → DIRECT4/DIRECT8 on heap
         - StoredBlock → BLOCK on heap; may overflow to LINK if too large
         - Link → LINK on heap (already externalized)
 

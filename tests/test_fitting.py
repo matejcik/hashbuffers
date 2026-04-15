@@ -6,7 +6,6 @@ from hashbuffers.codec import (
     SIZE_MAX,
     DataBlock,
     Link,
-    TableBlock,
     VTableEntryType,
 )
 from hashbuffers.fitting import (
@@ -58,19 +57,19 @@ class TestFitTable:
         assert block.vtable[2].type == VTableEntryType.INLINE
         assert block.get_int(2, 2, signed=True) == -5
 
-    def test_int_field_direct(self, store):
-        """IntField too large for inline becomes DIRECT."""
-        table = Table([DirectEntry.from_int(0xDEADBEEF, 4, signed=False)])
+    def test_int_field_direct4(self, store):
+        """IntField too large for inline becomes DIRECT4."""
+        table = Table([DirectEntry.from_int(0xDEADBEEF, signed=False)])
         block = table.build(store)
-        assert block.vtable[0].type == VTableEntryType.DIRECT
+        assert block.vtable[0].type == VTableEntryType.DIRECT4
         assert block.get_int(0, 4) == 0xDEADBEEF
 
-    def test_direct_data(self, store):
-        value = b"deadbeef"
-        table = Table([DirectEntry(value, 4, 1)])
+    def test_int_field_direct8(self, store):
+        """IntField too large for DIRECT4 becomes DIRECT8."""
+        table = Table([DirectEntry.from_int(0xDEAD_BEEF_CAFE_BABE, signed=False)])
         block = table.build(store)
-        assert block.vtable[0].type == VTableEntryType.DIRECT
-        assert block.get_fixedsize(0, len(value)) == value
+        assert block.vtable[0].type == VTableEntryType.DIRECT8
+        assert block.get_int(0, 8) == 0xDEAD_BEEF_CAFE_BABE
 
     def test_stored_block_field(self, store):
         inner = DataBlock.build(b"nested payload")
@@ -92,12 +91,12 @@ class TestFitTable:
         assert table.alignment >= 4  # LINK requires 4-alignment
 
     def test_mixed_fields(self, store):
-        """Table with a mix of INLINE, DIRECT, BLOCK, LINK, and NULL."""
+        """Table with a mix of INLINE, DIRECT4, BLOCK, LINK, and NULL."""
         inner = DataBlock.build(b"sub")
         fields = [
             InlineIntEntry(0, signed=False),  # 0: INLINE
             NULL_ENTRY,  # 1: NULL
-            DirectEntry.from_int(0x0102, 2, signed=False),  # 2: DIRECT
+            DirectEntry.from_int(0x0102, signed=False),  # 2: DIRECT4
             BlockEntry(inner, 2, 1),  # 3: BLOCK
             LinkEntry(Link(b"a" * 32, 50)),  # 4: LINK
         ]
@@ -105,7 +104,8 @@ class TestFitTable:
         block = table.build(store)
         assert block.get_int(0, 2) == 0
         assert block.get_int(1, 2) is None
-        assert block.get_fixedsize(2, 2) == b"\x02\x01"
+        assert block.get_int(2, 4) == 0x0102
+        assert block.get_fixedsize(2, 4) == b"\x02\x01\x00\x00"
         inner_result = block.get_block(3)
         assert isinstance(inner_result, DataBlock)
         link_result = block.get_block(4)
@@ -149,16 +149,15 @@ class TestFitTable:
         """A BlockEntry with data_alignment=1 must still be 2-aligned on the heap.
 
         Without clamping, the packer would treat it as 1-aligned, and a
-        preceding odd-sized DIRECT field could push it to an odd offset,
+        preceding odd-sized BLOCK field could push it to an odd offset,
         producing a TABLE that fails codec validation.
         """
-        # 3-byte DIRECT field: odd size, so the next 1-aligned field would
-        # land at an odd offset (heap_start is always even).
-        odd_direct = DirectEntry(b"\x01\x02\x03", 1, 1)
+        # Use a 3-byte DataBlock (5 bytes with header): odd total size
+        odd_block = BlockEntry(DataBlock.build(b"\x01\x02\x03"), 1, 1)
         # BlockEntry with data_alignment=1 — the clamp to 2 is what saves us.
         inner = DataBlock.build(b"\xaa")
         block_entry = BlockEntry(inner, 1, 1)
-        table = Table([NULL_ENTRY, odd_direct, block_entry])
+        table = Table([NULL_ENTRY, odd_block, block_entry])
         block = table.build(store)
         # The TABLE must survive its own validation (which checks 2-alignment
         # of all BLOCK entries).
@@ -166,7 +165,7 @@ class TestFitTable:
 
     def test_alignment_tracking(self, store):
         """Block alignment is the max of all field alignments."""
-        field = DirectEntry(b"\x00" * 8, 8, 1)
+        field = DirectEntry(b"\x00" * 8)
         table = Table([field])
         table.fit(store)
         assert table.alignment == 8

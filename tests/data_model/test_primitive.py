@@ -2,8 +2,8 @@
 
 import pytest
 
-from hashbuffers.codec import TableBlock, VTableEntry, VTableEntryType
-from hashbuffers.data_model.primitive import F32, F64, I32, U8, U16, U32
+from hashbuffers.codec import TableBlock, VTableEntry
+from hashbuffers.data_model.primitive import F32, F64, I32, U8, U32
 from hashbuffers.fitting import DirectEntry, InlineIntEntry
 from hashbuffers.store import BlockStore
 

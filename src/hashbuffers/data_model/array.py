@@ -13,7 +13,7 @@ from ..arrays import (
     build_table_array,
 )
 from ..codec import SIZE_MAX, Block, DataBlock, Link, TableBlock, VTableEntryType
-from ..fitting import DirectEntry, TableEntry
+from ..fitting import BlockEntry, TableEntry
 from ..store import BlockStore
 from ..util import pack_flat_array, padded_element_size, unpack_flat_array
 from .abc import BlockDecoderType, FieldType, FixedFieldType
@@ -60,27 +60,17 @@ class FixedArrayType(FixedFieldType[t.Sequence[T]]):
         return [self.element_type.decode_bytes(v) for v in byte_values]
 
     def encode(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
-        return DirectEntry(self.encode_bytes(value), self.get_alignment(), self.count)
+        data_block = DataBlock.build(
+            self.encode_bytes(value), align=self.get_alignment()
+        )
+        return BlockEntry.from_data(data_block, self.get_alignment(), self.count)
 
     def decode(
         self, table: TableBlock, index: int, store: BlockStore
     ) -> t.Sequence[T] | None:
         # TODO nicer interface for table.get
         entry = table.vtable[index]
-        if entry.type == VTableEntryType.DIRECT:
-            if entry.offset % self.get_alignment() != 0:
-                raise ValueError(
-                    f"Expected DIRECT entry to be aligned to {self.get_alignment()}"
-                )
-            data = table.get_fixedsize(index, self.get_size())
-            assert data is not None
-            return self.decode_bytes(data)
-
         if entry.type == VTableEntryType.BLOCK:
-            if entry.offset % self.get_alignment() != 0:
-                raise ValueError(
-                    f"Expected BLOCK entry to be aligned to {self.get_alignment()}"
-                )
             block = table.get_block(index)
             if not isinstance(block, DataBlock):
                 raise ValueError(f"Expected DATA block, got {type(block)}")
@@ -100,7 +90,7 @@ class FixedArrayType(FixedFieldType[t.Sequence[T]]):
             data = bytes(block.get_data(align=self.get_alignment()))
             return self.decode_bytes(data)
 
-        raise ValueError(f"Expected DIRECT, BLOCK, or LINK entry, got {entry.type}")
+        raise ValueError(f"Expected BLOCK or LINK entry, got {entry.type}")
 
 
 class BytestringType(FieldType[bytes]):

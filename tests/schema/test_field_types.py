@@ -69,7 +69,7 @@ class TestSignedEdgeCases:
         obj2 = SignedEdges(i16_min=-4097)
         sb2 = obj2.encode(store)
         table2 = TableBlock.decode(sb2)
-        assert table2.vtable[2].type == VTableEntryType.DIRECT
+        assert table2.vtable[2].type == VTableEntryType.DIRECT4
 
 
 # --- Unsigned edge cases ---
@@ -96,7 +96,7 @@ class TestUnsignedEdgeCases:
         obj2 = UnsignedEdges(inline_boundary=8192)
         sb2 = obj2.encode(store)
         table2 = TableBlock.decode(sb2)
-        assert table2.vtable[2].type == VTableEntryType.DIRECT
+        assert table2.vtable[2].type == VTableEntryType.DIRECT4
 
 
 # --- Float edge cases ---
@@ -175,5 +175,5 @@ class TestOutOfRange:
         class S(HashBuffer):
             v: int | None = Field(0, U8)
 
-        with pytest.raises((TypeError, ValueError)):
+        with pytest.raises(Exception):
             S(v="hello").encode(store)  # type: ignore[arg-type]

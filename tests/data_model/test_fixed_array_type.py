@@ -2,10 +2,10 @@
 
 import pytest
 
-from hashbuffers.codec import DataBlock, Link, TableBlock, VTableEntry, VTableEntryType
+from hashbuffers.codec import DataBlock, Link, TableBlock, VTableEntry
 from hashbuffers.data_model.array import FixedArrayType
 from hashbuffers.data_model.primitive import U8, U32
-from hashbuffers.fitting import DirectEntry, Table
+from hashbuffers.fitting import Table
 from hashbuffers.store import BlockStore
 
 
@@ -51,33 +51,17 @@ class TestFixedArrayTypeEncodeBytes:
 
 
 class TestFixedArrayTypeDecode:
-    def _build_table_with_direct(self, store, fa, values):
-        """Build a TABLE containing a DIRECT entry with the encoded array."""
+    def _build_table_with_block(self, store, fa, values):
+        """Build a TABLE containing a BLOCK entry with the encoded array."""
         entry = fa.encode(values, store)
         t = Table([entry])
         return t.build(store)
 
-    def test_decode_direct(self, store):
+    def test_decode_block(self, store):
         fa = FixedArrayType(U32, 3)
-        table = self._build_table_with_direct(store, fa, [10, 20, 30])
+        table = self._build_table_with_block(store, fa, [10, 20, 30])
         result = fa.decode(table, 0, store)
         assert result is not None and list(result) == [10, 20, 30]
-
-    def test_decode_direct_misaligned(self, store):
-        """DIRECT entry at an offset not aligned to element alignment should raise."""
-        fa = FixedArrayType(U32, 1)
-        # Build a table manually with misaligned DIRECT offset
-        data = U32.encode_bytes(42)
-        # heap_start for 2 vtable entries = 4 + 2*2 = 8 (4-aligned)
-        # Put a padding byte first, then data at offset 9 (not 4-aligned)
-        heap = b"\x00" + data + b"\x00" * 3
-        heap_start = TableBlock.heap_start(2)
-        table = TableBlock.build(
-            [VTableEntry.null(), VTableEntry.direct(heap_start + 1)],
-            heap,
-        )
-        with pytest.raises(ValueError, match="aligned"):
-            fa.decode(table, 1, store)
 
     def test_decode_block_entry(self, store):
         """BLOCK entry containing a DataBlock should decode correctly."""
@@ -93,25 +77,18 @@ class TestFixedArrayTypeDecode:
         result = fa.decode(table, 0, store)
         assert result is not None and list(result) == [10, 20, 30]
 
-    def test_decode_block_misaligned(self, store):
-        """BLOCK entry at misaligned offset should raise."""
+    def test_decode_block_wrong_data_type(self, store):
+        """BLOCK entry containing non-DATA block should raise for fixed array."""
         fa = FixedArrayType(U32, 1)
-        data_block = DataBlock.build(U32.encode_bytes(42), align=4)
-        block_bytes = data_block.encode()
-        # Create table with BLOCK at an odd offset
-        heap = b"\x00" + block_bytes
-        heap_start = TableBlock.heap_start(2)
-        # heap_start + 1 is odd → not 4-aligned
-        # But BLOCK entries need 2-alignment for the block header.
-        # Use offset that's 2-aligned but not 4-aligned.
-        offset = heap_start + 2
-        heap = b"\x00\x00" + block_bytes
-        table = TableBlock.build(
-            [VTableEntry.null(), VTableEntry.block(offset)],
-            heap,
-        )
-        with pytest.raises(ValueError, match="aligned"):
-            fa.decode(table, 1, store)
+        from hashbuffers.codec import SlotsBlock
+        from hashbuffers.fitting import BlockEntry, Table
+
+        slots = SlotsBlock.build_slots([b"\x00\x00\x00\x00"])
+        entry = BlockEntry(slots, 2, 1)
+        t = Table([entry])
+        table = t.build(store)
+        with pytest.raises(ValueError, match="Expected DATA block"):
+            fa.decode(table, 0, store)
 
     def test_decode_block_wrong_type(self, store):
         """BLOCK entry that is not a DataBlock should raise."""
@@ -177,5 +154,5 @@ class TestFixedArrayTypeDecode:
         """INLINE entry type should raise for a fixed array."""
         fa = FixedArrayType(U32, 1)
         table = TableBlock.build([VTableEntry.inline(42)], b"")
-        with pytest.raises(ValueError, match="Expected DIRECT, BLOCK, or LINK"):
+        with pytest.raises(ValueError, match="Expected BLOCK or LINK"):
             fa.decode(table, 0, store)

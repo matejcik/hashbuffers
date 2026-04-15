@@ -5,6 +5,7 @@ from ..codec import TableBlock
 from ..fitting import DirectEntry, TableEntry, int_inline_or_direct
 from ..store import BlockStore
 from .abc import FixedFieldType
+from ..util import bit_length
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,12 @@ class PrimitiveInt(FixedFieldType[int]):
         return int.from_bytes(data, "little", signed=self.signed)
 
     def encode(self, value: int, store: BlockStore) -> TableEntry:
-        return int_inline_or_direct(value, self.size, self.signed)
+        if bit_length(value, self.signed) > self.size * 8:
+            ltr = "I" if self.signed else "U"
+            n = self.size * 8
+            type_name = f"{ltr}{n}"
+            raise OverflowError(f"Value {value} is too large for {type_name}")
+        return int_inline_or_direct(value, self.signed)
 
     def decode(self, table: TableBlock, index: int, store: BlockStore) -> int | None:
         return table.get_int(index, self.size, signed=self.signed)
@@ -52,7 +58,7 @@ class PrimitiveFloat(FixedFieldType[float]):
         return struct.unpack(self.format, data)[0]
 
     def encode(self, value: float, store: BlockStore) -> TableEntry:
-        return DirectEntry(self.encode_bytes(value), self.size, 1)
+        return DirectEntry(self.encode_bytes(value))
 
     def decode(self, table: TableBlock, index: int, store: BlockStore) -> float | None:
         data = table.get_fixedsize(index, self.size)

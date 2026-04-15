@@ -32,3 +32,10 @@ def unpack_flat_array(
             f"Data length {len(data)} is not divisible by padded element size {padded_elem_size}"
         )
     return [data[i : i + elem_size] for i in range(0, len(data), padded_elem_size)]
+
+
+def bit_length(value: int, signed: bool) -> int:
+    if not signed:
+        return value.bit_length()
+    else:
+        return (value + (value < 0)).bit_length() + 1

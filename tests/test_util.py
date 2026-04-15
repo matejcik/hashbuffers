@@ -2,7 +2,12 @@
 
 import pytest
 
-from hashbuffers.util import pack_flat_array, padded_element_size, unpack_flat_array
+from hashbuffers.util import (
+    bit_length,
+    pack_flat_array,
+    padded_element_size,
+    unpack_flat_array,
+)
 
 
 class TestPaddedElementSize:
@@ -54,3 +59,47 @@ class TestUnpackFlatArray:
         assert len(result) == 2
         assert bytes(result[0]) == b"\x01\x02"
         assert bytes(result[1]) == b"\x03\x04"
+
+
+class TestBitLength:
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (0, 0),
+            (1, 1),
+            (2, 2),
+            (255, 8),
+            (256, 9),
+            (2**32 - 1, 32),
+            (2**32, 33),
+            (2**64 - 1, 64),
+            (2**64, 65),
+        ],
+    )
+    def test_unsigned(self, value, expected):
+        assert bit_length(value, False) == expected
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (0, 1),
+            (-1, 1),
+            (1, 2),
+            (-2, 2),
+            (2, 3),
+            (127, 8),
+            (-128, 8),
+            (128, 9),
+            (-129, 9),
+            (2**31 - 1, 32),
+            (-(2**31), 32),
+            (2**31, 33),
+            (-(2**31) - 1, 33),
+            (2**63 - 1, 64),
+            (-(2**63), 64),
+            (2**63, 65),
+            (-(2**63) - 1, 65),
+        ],
+    )
+    def test_signed(self, value, expected):
+        assert bit_length(value, True) == expected

@@ -12,7 +12,7 @@ from hashbuffers.arrays import (
     build_data_array,
     build_table_array,
 )
-from hashbuffers.codec import SIZE_MAX, LinksBlock, SlotsBlock, TableBlock
+from hashbuffers.codec import SIZE_MAX, DataBlock, LinksBlock
 from hashbuffers.fitting import BlockEntry, Table
 from hashbuffers.store import BlockStore
 
@@ -145,11 +145,9 @@ class TestBuildTableArray:
 
     def test_overflow_seals_and_retries(self, store):
         """Elements that don't fit in a single TABLE block should be split."""
-        from hashbuffers.fitting import DirectEntry
-
         # Create elements large enough that only a few fit per block
-        big_data = b"\x00" * 2000
-        entries = [DirectEntry(big_data, 4, 1) for _ in range(10)]
+        big_data = DataBlock.build(b"\x00" * 2000, align=4)
+        entries = [BlockEntry(big_data, 4, 1) for _ in range(10)]
         entry = build_table_array(entries, store)
         arr = TableArray(entry.block, store)
         assert len(arr) == 10

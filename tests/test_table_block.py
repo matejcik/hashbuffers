@@ -44,14 +44,14 @@ def test_sign_extend_13bit():
 
 
 def test_decode_rejects_reserved_vtable_types():
-    """Table decode must reject vtable entries with reserved type tags 0b001, 0b010, 0b011."""
+    """Table decode must reject vtable entries with reserved type tags 0b011, 0b101."""
     valid = TableBlock.build(
         [VTableEntry(VTableEntryType.NULL, 0)],
         b"",
     )
     encoded = valid.encode()
     # Layout: header 0-1, vtable_header 2-3, first vtable_entry 4-5
-    for reserved_type in (0b001, 0b010, 0b011):
+    for reserved_type in (0b001, 0b111):
         encoded_mut = bytearray(encoded)
         entry_val = int.from_bytes(encoded_mut[4:6], "little")
         entry_val = (entry_val & 0x1FFF) | (reserved_type << 13)
@@ -75,16 +75,51 @@ def test_decode_rejects_trailing_data():
         TableBlock.decode(encoded + b"x")
 
 
-def test_get_int_direct_u32():
-    """DIRECT entry pointing to a u32 on the heap is read back correctly."""
+def test_get_int_direct4_u32():
+    """DIRECT4 entry pointing to a u32 on the heap is read back correctly."""
     value = 0xDEAD_BEEF
-    heap = value.to_bytes(4, "little")
-    heap_start = TableBlock.heap_start(1)
+    heap = b"\x00\x00" + value.to_bytes(4, "little")  # 2 bytes padding for 4-alignment
+    # heap_start for 1 entry = 6, so offset 8 is 4-aligned
     block = TableBlock.build(
-        [VTableEntry(VTableEntryType.DIRECT, heap_start)],
+        [VTableEntry(VTableEntryType.DIRECT4, 8)],
         heap,
     )
     assert block.get_int(0, 4) == value
+
+
+def test_get_int_direct8_u64():
+    """DIRECT8 entry pointing to a u64 on the heap is read back correctly."""
+    value = 0xDEAD_BEEF_CAFE_BABE
+    # heap_start for 1 entry = 6, need 8-aligned offset = 8
+    heap = b"\x00\x00" + value.to_bytes(8, "little")
+    block = TableBlock.build(
+        [VTableEntry(VTableEntryType.DIRECT8, 8)],
+        heap,
+    )
+    assert block.get_int(0, 8) == value
+
+
+def test_get_int_rejects_oversized_direct8_for_u32():
+    """DIRECT8 must be rejected for a u32 field."""
+    value = 0xDEAD_BEEF
+    heap = b"\x00\x00" + value.to_bytes(8, "little")
+    block = TableBlock.build(
+        [VTableEntry(VTableEntryType.DIRECT8, 8)],
+        heap,
+    )
+    with pytest.raises(ValueError, match="oversized"):
+        block.get_int(0, 4)
+
+
+def test_get_int_rejects_oversized_direct4_for_u8():
+    """DIRECT4 must be rejected for a u8 field."""
+    heap = b"\x00\x00" + b"\x05\x00\x00\x00"
+    block = TableBlock.build(
+        [VTableEntry(VTableEntryType.DIRECT4, 8)],
+        heap,
+    )
+    with pytest.raises(ValueError, match="oversized"):
+        block.get_int(0, 1)
 
 
 def test_get_int_signed_inline():
@@ -134,15 +169,34 @@ def test_get_block_with_real_link():
     assert result.limit == 42
 
 
-def test_get_fixedsize():
-    """DIRECT entry for fixed-size data is read back correctly."""
-    raw = b"\x01\x02\x03\x04\x05\x06\x07\x08"
-    heap_start = TableBlock.heap_start(1)
+def test_get_float_direct4():
+    """DIRECT4 entry for f32 is read back correctly."""
+    import struct
+
+    raw = struct.pack("<f", 2.5)
+    heap = b"\x00\x00" + raw  # pad to 4-alignment at offset 8
     block = TableBlock.build(
-        [VTableEntry(VTableEntryType.DIRECT, heap_start)],
-        raw,
+        [VTableEntry(VTableEntryType.DIRECT4, 8)],
+        heap,
     )
-    assert block.get_fixedsize(0, 8) == raw
+    data = block.get_fixedsize(0, 4)
+    assert data is not None
+    assert struct.unpack("<f", data)[0] == pytest.approx(2.5)
+
+
+def test_get_float_direct8():
+    """DIRECT8 entry for f64 is read back correctly."""
+    import struct
+
+    raw = struct.pack("<d", 3.14)
+    heap = b"\x00\x00" + raw  # pad to 8-alignment at offset 8
+    block = TableBlock.build(
+        [VTableEntry(VTableEntryType.DIRECT8, 8)],
+        heap,
+    )
+    data = block.get_fixedsize(0, 8)
+    assert data is not None
+    assert struct.unpack("<d", data)[0] == pytest.approx(3.14)
 
 
 def test_get_int_null_returns_none():
@@ -174,24 +228,45 @@ def test_decode_rejects_reserved_vtable_header_flags():
         TableBlock.decode(bytes(encoded))
 
 
-def test_direct_offset_out_of_bounds():
-    """DIRECT entry with offset past heap boundary is caught during validation."""
-    heap_start = TableBlock.heap_start(1)
+def test_direct4_offset_out_of_bounds():
+    """DIRECT4 entry with offset past heap boundary is caught during validation."""
     block = TableBlock.build(
-        [VTableEntry(VTableEntryType.DIRECT, heap_start + 100)],
+        [VTableEntry(VTableEntryType.DIRECT4, 200)],
         b"small",
     )
     with pytest.raises(ValueError, match="out of bounds"):
         block.validate()
 
 
-def test_table_block_heap_pointer_offset_zero_rejected():
+def test_direct4_offset_zero_rejected():
     """Spec bounds: offset 0 is the block header, not a heap pointer."""
     block = TableBlock.build(
-        [VTableEntry(VTableEntryType.DIRECT, 0)],
+        [VTableEntry(VTableEntryType.DIRECT4, 0)],
         b"heap",
     )
     with pytest.raises(ValueError, match="out of bounds"):
+        block.validate()
+
+
+def test_direct4_not_4_aligned():
+    """DIRECT4 entry must be 4-aligned."""
+    heap = b"\x00" * 10
+    block = TableBlock.build(
+        [VTableEntry(VTableEntryType.DIRECT4, 7)],
+        heap,
+    )
+    with pytest.raises(ValueError, match="not 4-aligned"):
+        block.validate()
+
+
+def test_direct8_not_8_aligned():
+    """DIRECT8 entry must be 8-aligned."""
+    heap = b"\x00" * 16
+    block = TableBlock.build(
+        [VTableEntry(VTableEntryType.DIRECT8, 12)],
+        heap,
+    )
+    with pytest.raises(ValueError, match="not 8-aligned"):
         block.validate()
 
 

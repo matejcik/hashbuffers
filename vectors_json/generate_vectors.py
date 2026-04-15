@@ -10,18 +10,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import struct as pystruct
 import typing as t
 from enum import IntEnum
 from pathlib import Path
 
 from hashbuffers.codec import (
     BlockType,
-    Link,
-    LinksBlock,
     Tagged16,
     VTableEntry,
-    VTableEntryType,
 )
 from hashbuffers.schema import (
     U8,
@@ -362,7 +358,7 @@ def gen_positive() -> list[dict[str, t.Any]]:
     vectors.append(
         positive(
             "fixed_array",
-            "Fixed-count array u32[3] stored as DIRECT on heap",
+            "Fixed-count array u32[3] stored as BLOCK of DATA on heap",
             FixedArr,
             FixedArr(vec=[10, 20, 30]),
             {"vec": [10, 20, 30]},
@@ -567,14 +563,14 @@ def gen_negative() -> list[dict[str, t.Any]]:
         )
     )
 
-    # 4. entry_offset_oob: DIRECT entry pointing past block end
+    # 4. entry_offset_oob: DIRECT4 entry pointing past block end
     heap = b"\x00" * 4
-    entry = VTableEntry.direct(100)  # offset 100, way past block
+    entry = VTableEntry.direct4(100)  # offset 100, way past block
     block = build_table_bytes([entry], heap)
     vectors.append(
         negative(
             "entry_offset_oob",
-            "DIRECT vtable entry with offset 100 in a block of size 10",
+            "DIRECT4 vtable entry with offset 100 in a block of size 10",
             SIMPLE_SCHEMA,
             block,
             "Vtable entry offset out of bounds",
@@ -614,17 +610,17 @@ def gen_negative() -> list[dict[str, t.Any]]:
 
     # 7. block_not_2_aligned: BLOCK entry at odd offset
     # With 2 entries: heap_start = 4 + 2*2 = 8.
-    # Put first entry as DIRECT at offset 8 (1 byte), then BLOCK at offset 9 (odd).
+    # Put first entry as DIRECT4 at offset 8 (4 bytes), then BLOCK at offset 13 (odd).
     sub_block = BlockType.TABLE.encode(4) + Tagged16(0, 0).encode()  # minimal TABLE
-    heap = b"\x42" + sub_block + b"\x00" * 2  # 1 byte + 4 bytes sub_block + padding
+    heap = b"\x00" * 4 + b"\x42" + sub_block + b"\x00"  # 4 bytes + 1 byte padding + sub_block
     block = build_table_bytes(
-        [VTableEntry.direct(8), VTableEntry.block(9)],
+        [VTableEntry.direct4(8), VTableEntry.block(13)],
         heap,
     )
     vectors.append(
         negative(
             "block_not_2_aligned",
-            "BLOCK entry at odd offset 9 (must be 2-byte aligned)",
+            "BLOCK entry at odd offset 13 (must be 2-byte aligned)",
             {
                 "version": 1,
                 "root": "Root",
@@ -758,42 +754,31 @@ def gen_negative() -> list[dict[str, t.Any]]:
         )
     )
 
-    # 14. fixed_array_direct_misaligned: u32[3] DIRECT at non-4-aligned offset
-    # TABLE with 1 entry (fixed array field). heap_start = 6.
-    # Put DIRECT at offset 6. u32 has alignment 4. 6 % 4 = 2 → error.
-    heap = b"\x00" * 12  # 3 u32s = 12 bytes
-    block = build_table_bytes([VTableEntry.direct(6)], heap)
+    # 14. direct4_not_4_aligned: DIRECT4 at non-4-aligned offset
+    # TABLE with 1 entry. heap_start = 6. 6 % 4 = 2 → error.
+    heap = b"\x00" * 4
+    block = build_table_bytes([VTableEntry.direct4(6)], heap)
     vectors.append(
         negative(
-            "fixed_array_direct_misaligned",
-            "DIRECT entry for u32[3] at offset 6 (not 4-byte aligned)",
-            {
-                "version": 1,
-                "root": "Root",
-                "structs": {
-                    "Root": {
-                        "fields": [{"index": 0, "name": "vec", "type": "u32[3]"}],
-                    }
-                },
-            },
+            "direct4_not_4_aligned",
+            "DIRECT4 entry at offset 6 (not 4-byte aligned)",
+            SIMPLE_SCHEMA,
             block,
-            "Fixed array DIRECT entry is not properly aligned",
+            "DIRECT4 entry is not 4-byte aligned",
         )
     )
 
-    # 15. fixed_array_block_misaligned: u32[3] BLOCK at non-4-aligned offset
-    # TABLE with 2 entries. heap_start = 8. First entry = 1 byte DIRECT at 8.
-    # Second entry = BLOCK at offset 9 (not 4-aligned) containing a DATA block.
-    sub = BlockType.DATA.encode(16) + b"\x00\x00" + b"\x00" * 12  # 4-aligned data, 3 u32s
-    heap = b"\x42" + sub + b"\x00"  # 1 byte + sub_block + padding
+    # 15. direct8_not_8_aligned: DIRECT8 at non-8-aligned offset
+    # TABLE with 2 entries. heap_start = 8. Put DIRECT8 at offset 12 (4-aligned but not 8).
+    heap = b"\x00" * 16
     block = build_table_bytes(
-        [VTableEntry.direct(8), VTableEntry.block(9)],
+        [VTableEntry.null(), VTableEntry.direct8(12)],
         heap,
     )
     vectors.append(
         negative(
-            "fixed_array_block_misaligned",
-            "BLOCK entry for u32[3] at offset 9 (not aligned to element alignment 4)",
+            "direct8_not_8_aligned",
+            "DIRECT8 entry at offset 12 (not 8-byte aligned)",
             {
                 "version": 1,
                 "root": "Root",
@@ -801,6 +786,36 @@ def gen_negative() -> list[dict[str, t.Any]]:
                     "Root": {
                         "fields": [
                             {"index": 0, "name": "x", "type": "u8"},
+                            {"index": 1, "name": "big", "type": "u64"},
+                        ]
+                    },
+                },
+            },
+            block,
+            "DIRECT8 entry is not 8-byte aligned",
+        )
+    )
+
+    # 16. fixed_array_block_misaligned: u32[3] BLOCK at non-4-aligned offset
+    # TABLE with 2 entries. heap_start = 8. First entry = DIRECT4 at 8 (4 bytes).
+    # Second entry = BLOCK at offset 14 (not 4-aligned) containing a DATA block.
+    sub = BlockType.DATA.encode(16) + b"\x00\x00" + b"\x00" * 12  # 4-aligned data, 3 u32s
+    heap = b"\x00" * 4 + b"\x42\x42" + sub  # 4 bytes + 2 padding + sub_block
+    block = build_table_bytes(
+        [VTableEntry.direct4(8), VTableEntry.block(14)],
+        heap,
+    )
+    vectors.append(
+        negative(
+            "fixed_array_block_misaligned",
+            "BLOCK entry for u32[3] at offset 14 (not aligned to element alignment 4)",
+            {
+                "version": 1,
+                "root": "Root",
+                "structs": {
+                    "Root": {
+                        "fields": [
+                            {"index": 0, "name": "x", "type": "u32"},
                             {"index": 1, "name": "vec", "type": "u32[3]"},
                         ]
                     },

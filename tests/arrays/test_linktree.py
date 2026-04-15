@@ -3,7 +3,6 @@
 LinkTree is tested in isolation using manually constructed block trees.
 """
 
-import typing as t
 
 import pytest
 

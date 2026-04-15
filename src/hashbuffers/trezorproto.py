@@ -11,7 +11,6 @@ from .fitting import NULL_ENTRY, BlockEntry, Table, TableEntry
 from .schema import (
     I32,
     I64,
-    U8,
     U16,
     U32,
     U64,

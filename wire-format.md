@@ -188,18 +188,18 @@ A minimum valid size of a `TABLE` block is 4, to fit the `entry_count` field.
 The following values are recognized for type tags of a table entry:
 
 - `0b000 NULL` - skipped. SHOULD be all zero but impls MAY ignore nonzero values.
-- `0b001 DIRECT4` - `offset` points to a raw 4-byte primitive value on the heap
+- `0b010 DIRECT4` - `offset` points to a raw 4-byte primitive value on the heap
   (int or float). The value has no header or wrapper. `offset` MUST be 4-aligned.
-- `0b010 DIRECT8` - `offset` points to a raw 8-byte primitive value on the heap
+- `0b011 DIRECT8` - `offset` points to a raw 8-byte primitive value on the heap
   (int or float). The value has no header or wrapper. `offset` MUST be 8-aligned.
 - `0b100 INLINE` - `offset` is interpreted as an integer value of the field.
-- `0b110 BLOCK` - `offset` points to a sub-block on the heap. The sub-block has
+- `0b101 BLOCK` - `offset` points to a sub-block on the heap. The sub-block has
   its own block header and is interpreted as a complete block. `offset` MUST be
   aligned to the sub-block’s alignment requirement.
-- `0b111 LINK` - `offset` points to a raw link on the heap. The link has no
+- `0b110 LINK` - `offset` points to a raw link on the heap. The link has no
   header or wrapper. `offset` MUST be aligned to link alignment.
 
-Values `0b011` and `0b101` are reserved for future use.
+Values `0b001` and `0b111` are reserved for future use.
 
 Offsets for `DIRECT4`, `DIRECT8`, `BLOCK`, and `LINK`, MUST point into the heap,
 that is, _after_ the end of the entries list, and _before_ the end of the block.

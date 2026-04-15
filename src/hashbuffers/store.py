@@ -5,6 +5,7 @@ import hmac
 
 from .codec import Block, decode_block
 
+
 class BlockStore:
     """Content-addressed block store using HMAC-SHA256.
 

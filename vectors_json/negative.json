@@ -76,7 +76,7 @@
   },
   {
     "name": "entry_offset_oob",
-    "description": "DIRECT vtable entry with offset 100 in a block of size 10",
+    "description": "DIRECT4 vtable entry with offset 100 in a block of size 10",
     "schema": {
       "version": 1,
       "root": "Root",
@@ -93,9 +93,9 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "b6549fd1dee7a870182bfa9b1046d20e8bca6162cd204a0e8b72aa0e225db13f",
+    "root_digest": "918e0a5fb6b6c099cdd9e4d818cd4caad348600e51383900b569ce84687d3bc8",
     "store": {
-      "b6549fd1dee7a870182bfa9b1046d20e8bca6162cd204a0e8b72aa0e225db13f": "0a00010064a000000000"
+      "918e0a5fb6b6c099cdd9e4d818cd4caad348600e51383900b569ce84687d3bc8": "0a000100644000000000"
     },
     "error": "Vtable entry offset out of bounds"
   },
@@ -118,9 +118,9 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "991e8c064370b5c3ae4a9654bc24c41f5624743ecb28922681f60be644f5a4d4",
+    "root_digest": "d3ab22787fb265c4547b47b41f7395ec50106506c252bc9cb479aa1ae4cea6fd",
     "store": {
-      "991e8c064370b5c3ae4a9654bc24c41f5624743ecb28922681f60be644f5a4d4": "2c00010006e00000000000000000000000000000000000000000000000000000000000000000010000000000"
+      "d3ab22787fb265c4547b47b41f7395ec50106506c252bc9cb479aa1ae4cea6fd": "2c00010006c00000000000000000000000000000000000000000000000000000000000000000010000000000"
     },
     "error": "LINK entry is not 4-byte aligned"
   },
@@ -143,15 +143,15 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "1cfe54c8ccca2086684abbac09229461bd4ea151d5d215e8cd05ebcb15e6f8fd",
+    "root_digest": "6b5c3e01804b4a57326464103950b9d29a96ffb62dc63b9615677e287c586dc6",
     "store": {
-      "1cfe54c8ccca2086684abbac09229461bd4ea151d5d215e8cd05ebcb15e6f8fd": "2c00010008e00000000000000000000000000000000000000000000000000000000000000000000000000000"
+      "6b5c3e01804b4a57326464103950b9d29a96ffb62dc63b9615677e287c586dc6": "2c00010008c00000000000000000000000000000000000000000000000000000000000000000000000000000"
     },
     "error": "Link limit must not be 0"
   },
   {
     "name": "block_not_2_aligned",
-    "description": "BLOCK entry at odd offset 9 (must be 2-byte aligned)",
+    "description": "BLOCK entry at odd offset 13 (must be 2-byte aligned)",
     "schema": {
       "version": 1,
       "root": "Root",
@@ -182,9 +182,9 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "0462e0749b1c179a4efcd12d125a064d874ff1d0472492ed4bcdf94ca1a4ac9b",
+    "root_digest": "8a34ba64d08d525b520730541035e502a7dd0107d266e6015356839f42283777",
     "store": {
-      "0462e0749b1c179a4efcd12d125a064d874ff1d0472492ed4bcdf94ca1a4ac9b": "0f00020008a009c042040000000000"
+      "8a34ba64d08d525b520730541035e502a7dd0107d266e6015356839f42283777": "1200020008400da000000000420400000000"
     },
     "error": "BLOCK entry is not 2-byte aligned"
   },
@@ -207,9 +207,9 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "ebfa48f05936be6a02f63d04baa2ef7ec74139316f8d88299eff5d74810ed5f3",
+    "root_digest": "a9762574b8a741c0d0e3722808f65dfb72c8e4cba16d0c6a17f637cd7ca273ac",
     "store": {
-      "ebfa48f05936be6a02f63d04baa2ef7ec74139316f8d88299eff5d74810ed5f3": "0c00010006c0640000000000"
+      "a9762574b8a741c0d0e3722808f65dfb72c8e4cba16d0c6a17f637cd7ca273ac": "0c00010006a0640000000000"
     },
     "error": "Sub-block exceeds parent block"
   },
@@ -339,8 +339,8 @@
     "error": "Expected TABLE block, got DATA"
   },
   {
-    "name": "fixed_array_direct_misaligned",
-    "description": "DIRECT entry for u32[3] at offset 6 (not 4-byte aligned)",
+    "name": "direct4_not_4_aligned",
+    "description": "DIRECT4 entry at offset 6 (not 4-byte aligned)",
     "schema": {
       "version": 1,
       "root": "Root",
@@ -349,23 +349,23 @@
           "fields": [
             {
               "index": 0,
-              "name": "vec",
-              "type": "u32[3]"
+              "name": "x",
+              "type": "u32"
             }
           ]
         }
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "eec0ef802eec0556f9a013a14dc11dc3707cd34a66b8cdba89f88a46a988a579",
+    "root_digest": "33f9d2e8611504d3af4d327ce2a81bed12edd951f75d8b315c28f2c885907ee7",
     "store": {
-      "eec0ef802eec0556f9a013a14dc11dc3707cd34a66b8cdba89f88a46a988a579": "1200010006a0000000000000000000000000"
+      "33f9d2e8611504d3af4d327ce2a81bed12edd951f75d8b315c28f2c885907ee7": "0a000100064000000000"
     },
-    "error": "Fixed array DIRECT entry is not properly aligned"
+    "error": "DIRECT4 entry is not 4-byte aligned"
   },
   {
-    "name": "fixed_array_block_misaligned",
-    "description": "BLOCK entry for u32[3] at offset 9 (not aligned to element alignment 4)",
+    "name": "direct8_not_8_aligned",
+    "description": "DIRECT8 entry at offset 12 (not 8-byte aligned)",
     "schema": {
       "version": 1,
       "root": "Root",
@@ -379,6 +379,36 @@
             },
             {
               "index": 1,
+              "name": "big",
+              "type": "u64"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "8e838faffbd734586a40b4e2692e09828aa83f17829ad675de8f6152ffaf25e6",
+    "store": {
+      "8e838faffbd734586a40b4e2692e09828aa83f17829ad675de8f6152ffaf25e6": "1800020000000c6000000000000000000000000000000000"
+    },
+    "error": "DIRECT8 entry is not 8-byte aligned"
+  },
+  {
+    "name": "fixed_array_block_misaligned",
+    "description": "BLOCK entry for u32[3] at offset 14 (not aligned to element alignment 4)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            },
+            {
+              "index": 1,
               "name": "vec",
               "type": "u32[3]"
             }
@@ -387,9 +417,9 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "726d91b26f95ff2545b7888ccb8b0799da9021672f68a865a0a6242e29230e3a",
+    "root_digest": "9f340a515ca9676276c357ad5b39f7566617a9ecf4db29cd3488c49d1d0ce901",
     "store": {
-      "726d91b26f95ff2545b7888ccb8b0799da9021672f68a865a0a6242e29230e3a": "1a00020008a009c0421040000000000000000000000000000000"
+      "9f340a515ca9676276c357ad5b39f7566617a9ecf4db29cd3488c49d1d0ce901": "1e00020008400ea000000000424210400000000000000000000000000000"
     },
     "error": "Fixed array BLOCK entry is not properly aligned"
   }

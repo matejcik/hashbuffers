@@ -3,7 +3,7 @@
 import pytest
 
 from hashbuffers.arrays import TableArray, build_table_array
-from hashbuffers.codec import DataBlock, Link, TableBlock, VTableEntry, VTableEntryType
+from hashbuffers.codec import DataBlock, Link, TableBlock
 from hashbuffers.fitting import Table
 from hashbuffers.store import BlockStore
 

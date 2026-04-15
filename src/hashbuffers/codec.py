@@ -105,10 +105,11 @@ class BlockType(IntEnum):
 
 class VTableEntryType(IntEnum):
     NULL = 0b000
+    DIRECT4 = 0b010
+    DIRECT8 = 0b011
     INLINE = 0b100
-    DIRECT = 0b101
-    BLOCK = 0b110
-    LINK = 0b111
+    BLOCK = 0b101
+    LINK = 0b110
 
 
 @dataclass
@@ -133,8 +134,12 @@ class VTableEntry:
         return cls(VTableEntryType.INLINE, value)
 
     @classmethod
-    def direct(cls, offset: int) -> t.Self:
-        return cls(VTableEntryType.DIRECT, offset)
+    def direct4(cls, offset: int) -> t.Self:
+        return cls(VTableEntryType.DIRECT4, offset)
+
+    @classmethod
+    def direct8(cls, offset: int) -> t.Self:
+        return cls(VTableEntryType.DIRECT8, offset)
 
     @classmethod
     def block(cls, offset: int) -> t.Self:
@@ -292,7 +297,25 @@ class TableBlock(Block):
                 raise ValueError(
                     f"Vtable entry offset {entry.offset} is out of bounds ({heap_start}-{self.size})"
                 )
-            if entry.type == VTableEntryType.LINK:
+            if entry.type == VTableEntryType.DIRECT4:
+                if entry.offset > self.size - 4:
+                    raise ValueError(
+                        f"DIRECT4 at offset {entry.offset} doesn't fit in block"
+                    )
+                if entry.offset % 4 != 0:
+                    raise ValueError(
+                        f"DIRECT4 at offset {entry.offset} is not 4-aligned"
+                    )
+            elif entry.type == VTableEntryType.DIRECT8:
+                if entry.offset > self.size - 8:
+                    raise ValueError(
+                        f"DIRECT8 at offset {entry.offset} doesn't fit in block"
+                    )
+                if entry.offset % 8 != 0:
+                    raise ValueError(
+                        f"DIRECT8 at offset {entry.offset} is not 8-aligned"
+                    )
+            elif entry.type == VTableEntryType.LINK:
                 if entry.offset > self.size - Link.SIZE:
                     raise ValueError(
                         f"LINK at offset {entry.offset} doesn't fit in block (need {Link.SIZE} bytes)"
@@ -321,6 +344,11 @@ class TableBlock(Block):
         return value - (BIT13 << 1) if value & BIT13 else value
 
     def get_int(self, index: int, size: int, signed: bool = False) -> int | None:
+        if size not in (1, 2, 4, 8):
+            raise ValueError(f"Invalid size: {size} (must be 1, 2, 4, or 8)")
+        if size == 2:
+            # no dedicated u16 storage, upgrade to u32 / DIRECT4
+            size = 4
         try:
             entry = self.vtable[index]
         except IndexError:
@@ -330,24 +358,33 @@ class TableBlock(Block):
                 return None
             case VTableEntryType.INLINE:
                 return self._sign_extend_13bit(entry.offset) if signed else entry.offset
-            case VTableEntryType.DIRECT:
-                data = self.get_heap_data(entry.offset, size)
+            case VTableEntryType.DIRECT4:
+                if size < 4:
+                    raise ValueError(f"DIRECT4 is oversized for {size}-byte integer")
+                data = self.get_heap_data(entry.offset, 4)
+                return int.from_bytes(data, "little", signed=signed)
+            case VTableEntryType.DIRECT8:
+                if size < 8:
+                    raise ValueError(f"DIRECT8 is oversized for {size}-byte integer")
+                data = self.get_heap_data(entry.offset, 8)
                 return int.from_bytes(data, "little", signed=signed)
             case _:
                 raise ValueError(f"Expected integer, got {entry.type}")
 
     def get_fixedsize(self, index: int, size: int) -> bytes | None:
+        if size not in (4, 8):
+            raise ValueError(f"Invalid size: {size}")
         try:
             entry = self.vtable[index]
         except IndexError:
             return None
-        match entry.type:
-            case VTableEntryType.NULL:
-                return None
-            case VTableEntryType.DIRECT:
-                return self.get_heap_data(entry.offset, size)
-            case _:
-                raise ValueError(f"Expected fixed-size, got {entry.type}")
+        if entry.type == VTableEntryType.NULL:
+            return None
+        if size == 4 and entry.type == VTableEntryType.DIRECT4:
+            return self.get_heap_data(entry.offset, 4)
+        if size == 8 and entry.type == VTableEntryType.DIRECT8:
+            return self.get_heap_data(entry.offset, 8)
+        raise ValueError(f"Invalid entry type for size {size}: {entry.type}")
 
     def get_block(self, index: int) -> Block | Link | None:
         try:
