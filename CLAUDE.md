@@ -18,6 +18,13 @@ This runs, in order: `black`, `isort`, and `pyright`.
 
 Ignore the warning coming from `black` about not being able to format for 3.14.
 
+## Codebase Map
+
+See [.claude/CODEBASE_MAP.md](.claude/CODEBASE_MAP.md) for a full map of source
+files, test organization, and key concepts. Use it to navigate directly to the
+right file instead of exploring from scratch. Make sure to update it when you make changes!
+If the map is not present (missing from checkout), notify the user and offer to generate it.
+
 ## Spec changes
 
 When spec is updated, refer to [SPEC_UPDATE_CHECKLIST.md](SPEC_UPDATE_CHECKLIST.md) to update the codebase.
