@@ -188,21 +188,21 @@ A minimum valid size of a `TABLE` block is 4, to fit the `entry_count` field.
 The following values are recognized for type tags of a table entry:
 
 - `0b000 NULL` - skipped. SHOULD be all zero but impls MAY ignore nonzero values.
+- `0b001 DIRECT4` - `offset` points to a raw 4-byte primitive value on the heap
+  (int or float). The value has no header or wrapper. `offset` MUST be 4-aligned.
+- `0b010 DIRECT8` - `offset` points to a raw 8-byte primitive value on the heap
+  (int or float). The value has no header or wrapper. `offset` MUST be 8-aligned.
 - `0b100 INLINE` - `offset` is interpreted as an integer value of the field.
-- `0b101 DIRECT` - `offset` points to a raw value of schema-defined size on the
-  heap (int or float of more than 13 bits, or a fixed-size array of fixed-size
-  elements). The value has no header or wrapper. `offset` MUST be properly
-  aligned to the value’s requirements.
 - `0b110 BLOCK` - `offset` points to a sub-block on the heap. The sub-block has
   its own block header and is interpreted as a complete block. `offset` MUST be
   aligned to the sub-block’s alignment requirement.
 - `0b111 LINK` - `offset` points to a raw link on the heap. The link has no
   header or wrapper. `offset` MUST be aligned to link alignment.
 
-Values `0b001` `0b010` and `0b011` are reserved for future use.
+Values `0b011` and `0b101` are reserved for future use.
 
-Offsets for `DIRECT`, `BLOCK`, and `LINK`, MUST point into the heap, that is,
-_after_ the end of the entries list, and _before_ the end of the block.
+Offsets for `DIRECT4`, `DIRECT8`, `BLOCK`, and `LINK`, MUST point into the heap,
+that is, _after_ the end of the entries list, and _before_ the end of the block.
 
 The `limit` field of a `LINK` entry is the count of elements in the linked
 array. However, "count of elements" can be schema-dependent. See [Links in
@@ -219,8 +219,9 @@ determine the alignment of a block:
 2. Run the [Validation](#validation) algorithm for the block header only.
 3. Set `max_align = 2`.
 4. Walk all entries:
+   * if a `DIRECT4` is found, bump `max_align` to 4
+   * if a `DIRECT8` is found, bump `max_align` to 8
    * if a `LINK` is found, bump `max_align` to `LINK_ALIGN` (4 bytes)
-   * if a `DIRECT` is found, bump `max_align` to schema-defined alignment of that field
    * if a `BLOCK` is found, check the block's alignment and run this algorithm
      recursively. Then bump `max_align` to the block's alignment requirement
 
@@ -237,16 +238,20 @@ Upon receiving a `TABLE` block, the reader MUST perform these validation steps:
 
 For each entry, the following checks MUST be performed:
 
-1. The entry is not a reserved type (`0b001` `0b010` `0b011`).
-2. For `DIRECT`, `BLOCK`, and `LINK`, check that `heap_start <= offset < size`.
-3. For `DIRECT`, if schema is available:
-  - `offset <= size - entry_size`
-  - `offset % entry_align == 0`
-4. For `LINK`:
+1. The entry is not a reserved type (`0b011` `0b101`).
+2. For `DIRECT4`, `DIRECT8`, `BLOCK`, and `LINK`, check that
+   `heap_start <= offset < size`.
+3. For `DIRECT4`:
+  - `offset <= size - 4`
+  - `offset % 4 == 0`
+4. For `DIRECT8`:
+  - `offset <= size - 8`
+  - `offset % 8 == 0`
+5. For `LINK`:
   - `offset <= size - LINK_SIZE` (36 bytes)
   - `offset % LINK_ALIGN == 0` (4 bytes)
   - Then examine the link and check that its `limit != 0`.
-5. For `BLOCK`:
+6. For `BLOCK`:
   1. `offset <= size - 2`
   2. `offset % BLOCK_ALIGN == 0` (2 bytes)
   3. Read `block_size` from the header at `offset`. Check that `offset + block_size <= size`.
@@ -513,43 +518,55 @@ values. (most commonly `u8`).
 Booleans are represented as an `u8` enum with two allowed values `TRUE = 1` and
 `FALSE = 0`.
 
-An integer SHOULD be stored as `INLINE` if its actual value fits in 13 bits or
-less (counting sign bit for signed integers), regardless of its declared type
-size.
+When an integer is a direct member of a `TABLE` (i.e., a struct field), it is
+stored not by its declared type size, but by its actual value size.
 
-When reading a signed integer from an `INLINE` field, the reader MUST
-sign-extend the value to the full width of the type.
+The maximum allowed representation is determined by the declared type:
 
-Integer values larger than 13 bits MUST be stored as `DIRECT`.
+- `u8`, `i8`: `INLINE` only (all values fit in 13 bits).
+- `u16`, `i16`, `u32`, `i32`: up to `DIRECT4`.
+- `u64`, `i64`: up to `DIRECT8`.
+
+Writers MUST NOT exceed the maximum representation for the declared type.
+Writers SHOULD use the smallest representation that fits the actual value:
+`INLINE` if the value fits in 13 bits (counting sign bit for signed integers),
+`DIRECT4` if it fits in 32 bits, otherwise `DIRECT8`.
+
+Readers MUST accept any representation up to the maximum for the declared type,
+and sign-extend or zero-extend the value to the full width of the type. Readers
+MUST reject representations that exceed the maximum (e.g., `DIRECT8` for a
+`u32` field, or `DIRECT4` for a `u8` field).
+
+Integer values that are elements of an array (stored in a `DATA` block) are
+stored at their declared type size, as per the `DATA` block format.
 
 #### Floats
 
 The following types of floats are allowed: `f32` `f64`
 
-Floats are stored as `DIRECT`.
+`f32` is stored as `DIRECT4`. `f64` is stored as `DIRECT8`.
 
 #### Custom fixed-size types
 
 Implementations MAY define fixed-size types that are not primitives (such as
 tuples or packed structs). Such types MUST specify their alignment requirements.
 
-If the size is no larger than a link (36 bytes), it MUST be stored as `DIRECT`.
+Custom fixed-size types MUST be stored as a `BLOCK` containing a `DATA`
+sub-block of the appropriate element type.
 
-Larger values can be stored as `DIRECT`, if they fit inside the struct, or as a
-`LINK` to an arbitrary size `DATA` array.
+If the size is no larger than a link (36 bytes), the `BLOCK` MUST be stored
+inline. Larger values can be stored as an inline `BLOCK` if they fit inside the
+struct, or as a `LINK` to an arbitrary size `DATA` array.
 
 #### Fixed-size arrays
 
 This section describes arrays whose element count is explicitly specified in the
 schema. For variable-size arrays, see [Arrays](#arrays).
 
-Such an array of fixed-size elements can be stored as `DIRECT`, if it fits
-inside the block (see [Fitting](#fitting)).
+Such an array of fixed-size elements MUST be stored as a `BLOCK` containing a
+`DATA` sub-block, if it fits inside the block (see [Fitting](#fitting)).
 
 The alignment of an array is equal to its element's alignment.
-
-Arrays that can fit inside a block SHOULD NOT be stored as `BLOCK`, to avoid
-unnecessary block overhead.
 
 A fixed-size array of fixed-size elements is itself considered a fixed-size
 type, and may be an element of another array. When other constraints allow,
@@ -651,14 +668,15 @@ been serialized, so writers MUST serialize children (sub-structs, arrays) before
 the parent struct that contains them.
 
 The _encoded size_ of a field is the total number of bytes it occupies in a
-block: for a primitive, its byte width; for a sub-block (sub-struct or inline
-array), the block size including its 2-byte block header; for a link, 36 bytes.
+block: for a `DIRECT4`, 4 bytes; for a `DIRECT8`, 8 bytes; for a sub-block
+(sub-struct or inline array), the block size including its 2-byte block header;
+for a link, 36 bytes.
 
 ### Struct Member Fitting
 
 When building a single-block `TABLE` for a struct, the writer must determine
-which members are stored inline, which are placed on the block's heap (`DIRECT`
-or `BLOCK`), and which are externalized as `LINK`s to other blocks.
+which members are stored inline, which are placed on the block's heap (`DIRECT4`,
+`DIRECT8`, or `BLOCK`), and which are externalized as `LINK`s to other blocks.
 
 The following rules apply:
 
@@ -667,9 +685,9 @@ The following rules apply:
 
 2. **Small values:** Any field (primitive, array, string, or sub-struct) whose
    encoded size is no larger than the size of a Link (36 bytes) MUST NOT be
-   externalized as a `LINK`. It MUST be stored on the heap as `DIRECT` or
-   `BLOCK` (depending on the type), because the link would be at least as large
-   as the data it points to, while adding child block overhead.
+   externalized as a `LINK`. It MUST be stored on the heap as `DIRECT4`,
+   `DIRECT8`, or `BLOCK` (depending on the type), because the link would be at
+   least as large as the data it points to, while adding child block overhead.
 
 3. **Filling the remaining space:** For fields too large to be considered
    "small values" but not required to be linked, the writer must decide how to
@@ -690,7 +708,7 @@ The following rules apply:
    the knapsack with a dynamic programming approach, which is tractable given
    typical field counts and the small block capacity.
 
-4. **Alignment packing:** When placing `DIRECT` or `BLOCK` fields on the heap,
+4. **Alignment packing:** When placing `DIRECT4`, `DIRECT8`, or `BLOCK` fields on the heap,
    writers SHOULD order them to minimize padding bytes, using the following
    algorithm:
    - Separate all heap-bound fields into groups based on their required
