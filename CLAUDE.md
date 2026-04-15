@@ -17,3 +17,7 @@ Run all style/type checks at once: `make style`
 This runs, in order: `black`, `isort`, and `pyright`.
 
 Ignore the warning coming from `black` about not being able to format for 3.14.
+
+## Spec changes
+
+When spec is updated, refer to [SPEC_UPDATE_CHECKLIST.md](SPEC_UPDATE_CHECKLIST.md) to update the codebase.
