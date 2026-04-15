@@ -323,6 +323,25 @@ def test_table_block_block_alignment():
         block.validate()
 
 
+def test_table_block_nested_table_alignment():
+    """Nested TABLE with DIRECT4 entry requires 4-alignment in parent."""
+    # Inner TABLE: 1 field (DIRECT4 at offset 8), heap = 2 pad + 4 data
+    inner_heap = b"\x00\x00" + b"\x01\x00\x00\x00"
+    inner = TableBlock.build(
+        [VTableEntry.direct4(8)],
+        inner_heap,
+    )
+    inner_bytes = inner.encode()
+    # Outer TABLE with 1 entry: heap_start = 6.
+    # Inner block at offset 6: 6 % 2 == 0 (passes basic check), but 6 % 4 != 0.
+    outer = TableBlock.build(
+        [VTableEntry.block(6)],
+        inner_bytes,
+    )
+    with pytest.raises(ValueError, match="not aligned"):
+        outer.validate()
+
+
 def test_table_block_block_exceeds_parent():
     """Sub-block declared size exceeding remaining space is caught during decode."""
     heap_start = TableBlock.heap_start(1)  # = 6

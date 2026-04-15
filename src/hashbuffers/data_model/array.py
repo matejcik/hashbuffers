@@ -74,6 +74,12 @@ class FixedArrayType(FixedFieldType[t.Sequence[T]]):
             block = table.get_block(index)
             if not isinstance(block, DataBlock):
                 raise ValueError(f"Expected DATA block, got {type(block)}")
+            align = self.get_alignment()
+            if entry.offset % align != 0:
+                raise ValueError(
+                    f"Fixed array BLOCK entry at offset {entry.offset} "
+                    f"is not aligned to element alignment {align}"
+                )
             data = bytes(block.get_data(align=self.get_alignment()))
             return self.decode_bytes(data)
 

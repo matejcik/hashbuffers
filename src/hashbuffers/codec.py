@@ -337,6 +337,29 @@ class TableBlock(Block):
                     raise ValueError(
                         f"Sub-block at offset {entry.offset} with size {sub_block.size} exceeds parent block"
                     )
+                if isinstance(sub_block, TableBlock):
+                    sub_align = sub_block.alignment()
+                    if entry.offset % sub_align != 0:
+                        raise ValueError(
+                            f"BLOCK at offset {entry.offset} is not aligned "
+                            f"to sub-block's alignment requirement {sub_align}"
+                        )
+
+    def alignment(self) -> int:
+        """Compute alignment requirement from vtable entries (spec algorithm)."""
+        max_align = 2
+        for entry in self.vtable:
+            if entry.type == VTableEntryType.DIRECT4:
+                max_align = max(max_align, 4)
+            elif entry.type == VTableEntryType.DIRECT8:
+                max_align = max(max_align, 8)
+            elif entry.type == VTableEntryType.LINK:
+                max_align = max(max_align, 4)
+            elif entry.type == VTableEntryType.BLOCK:
+                sub_block = self._get_block(entry.offset)
+                if isinstance(sub_block, TableBlock):
+                    max_align = max(max_align, sub_block.alignment())
+        return max_align
 
     @staticmethod
     def _sign_extend_13bit(value: int) -> int:

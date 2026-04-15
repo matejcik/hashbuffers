@@ -3,7 +3,6 @@
 LinkTree is tested in isolation using manually constructed block trees.
 """
 
-
 import pytest
 
 from hashbuffers.arrays import LinkTree, limits_to_cumulative

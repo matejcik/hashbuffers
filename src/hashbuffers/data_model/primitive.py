@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from ..codec import TableBlock
 from ..fitting import DirectEntry, TableEntry, int_inline_or_direct
 from ..store import BlockStore
-from .abc import FixedFieldType
 from ..util import bit_length
+from .abc import FixedFieldType
 
 
 @dataclass(frozen=True)
