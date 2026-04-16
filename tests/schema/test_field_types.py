@@ -4,7 +4,8 @@ import math
 
 import pytest
 
-from hashbuffers.codec import TableBlock, VTableEntryType
+from hashbuffers.codec import TableBlock
+from hashbuffers.codec.table import TableEntryType
 from hashbuffers.schema import (
     F32,
     F64,
@@ -64,12 +65,12 @@ class TestSignedEdgeCases:
         obj = SignedEdges(i16_min=-4096)
         sb = obj.encode(store)
         table = TableBlock.decode(sb)
-        assert table.vtable[2].type == VTableEntryType.INLINE
+        assert table.vtable[2].type == TableEntryType.INLINE
 
         obj2 = SignedEdges(i16_min=-4097)
         sb2 = obj2.encode(store)
         table2 = TableBlock.decode(sb2)
-        assert table2.vtable[2].type == VTableEntryType.DIRECT4
+        assert table2.vtable[2].type == TableEntryType.DIRECT4
 
 
 # --- Unsigned edge cases ---
@@ -91,12 +92,12 @@ class TestUnsignedEdgeCases:
         obj = UnsignedEdges(inline_boundary=8191)
         sb = obj.encode(store)
         table = TableBlock.decode(sb)
-        assert table.vtable[2].type == VTableEntryType.INLINE
+        assert table.vtable[2].type == TableEntryType.INLINE
 
         obj2 = UnsignedEdges(inline_boundary=8192)
         sb2 = obj2.encode(store)
         table2 = TableBlock.decode(sb2)
-        assert table2.vtable[2].type == VTableEntryType.DIRECT4
+        assert table2.vtable[2].type == TableEntryType.DIRECT4
 
 
 # --- Float edge cases ---

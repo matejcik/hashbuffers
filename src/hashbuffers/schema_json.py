@@ -15,7 +15,6 @@ from enum import IntEnum
 from functools import cached_property
 
 from .codec import TableBlock
-from .data_model.abc import FieldType, FixedFieldType
 from .data_model.adapter import AdapterCodec
 from .data_model.array import (
     BlockArrayType,
@@ -24,6 +23,7 @@ from .data_model.array import (
     DataArrayType,
     FixedArrayType,
 )
+from .data_model.common import FieldType, FixedFieldType
 from .data_model.primitive import F32, F64, I8, I16, I32, I64, U8, U16, U32, U64
 from .data_model.struct import StructField, StructType
 from .schema import (

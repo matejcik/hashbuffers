@@ -20,9 +20,10 @@ from .codec import (
     SlotsBlock,
     TableBlock,
 )
-from .fitting import BlockEntry, Table, TableEntry
+from .codec.table import LinkEntry, TableEntry
+from .fitting import BlockEntry, Table, outlink
 from .store import BlockStore
-from .util import padded_element_size
+from .util import align_up
 
 T = t.TypeVar("T")
 EntryType = t.TypeVar("EntryType")
@@ -45,13 +46,9 @@ def limits_to_individual(links: t.Sequence[Link]) -> list[Link]:
 class LinkTree:
     root: Block
     store: BlockStore
-    leaf_length: t.Callable[[Block], int]
 
     def __len__(self) -> int:
-        if isinstance(self.root, LinksBlock):
-            return self.root.links[-1].limit
-        else:
-            return self.leaf_length(self.root)
+        return self.root.element_count()
 
     def find_leaf(self, relative_index: int) -> tuple[int, Block]:
         node = self.root
@@ -59,22 +56,22 @@ class LinkTree:
             # short circuit
             return relative_index, node
 
-        expected_size = node.links[-1].limit
+        expected_size = node.element_count()
 
         # use a loop instead of recursion to avoid stack overflow -- trees are allowed to be arbitrarily deep
         while isinstance(node, LinksBlock) and expected_size > 1:
             # verify actual size against expected from previous round
-            actual_size = node.links[-1].limit
+            actual_size = node.element_count()
             if expected_size != actual_size:
                 raise ValueError(
                     f"Expected {expected_size} elements, got {actual_size}"
                 )
 
             # binary-search the index of the link that contains the element
-            i = bisect.bisect_right(node.links, relative_index, key=lambda l: l.limit)
-            link = node.links[i]
+            i = bisect.bisect_right(node, relative_index, key=lambda l: l.limit)
+            link = node[i]
             # find the previous link's limit
-            prev_limit = node.links[i - 1].limit if i > 0 else 0
+            prev_limit = node[i - 1].limit if i > 0 else 0
             # calculate expected size for next round
             expected_size = link.limit - prev_limit
             # adjust relative index
@@ -83,7 +80,7 @@ class LinkTree:
             node = self.store.fetch(link.digest)
 
         # now `node` is a leaf block
-        if (actual_size := self.leaf_length(node)) != expected_size:
+        if (actual_size := node.element_count()) != expected_size:
             raise ValueError(f"Expected {expected_size} elements, got {actual_size}")
         return relative_index, node
 
@@ -114,13 +111,13 @@ class LinkTree:
 
         while stack:
             block, block_start, expected_size = stack.pop()
+            actual_size = block.element_count()
+            if actual_size != expected_size:
+                raise ValueError(
+                    f"Expected {expected_size} elements, got {actual_size}"
+                )
 
             if not isinstance(block, LinksBlock):
-                actual_size = self.leaf_length(block)
-                if actual_size != expected_size:
-                    raise ValueError(
-                        f"Expected {expected_size} elements, got {actual_size}"
-                    )
                 if overlaps_query(block_start, expected_size):
                     if not leaves:
                         # mark the global start offset of the first leaf
@@ -128,15 +125,9 @@ class LinkTree:
                     leaves.append(block)
                 continue
 
-            actual_size = block.links[-1].limit
-            if actual_size != expected_size:
-                raise ValueError(
-                    f"Expected {expected_size} elements, got {actual_size}"
-                )
-
             prev_limit = 0
             children: list[tuple[Block, int, int]] = []
-            for link in block.links:
+            for link in block:
                 child_size = link.limit - prev_limit
                 child_start = block_start + prev_limit
                 prev_limit = link.limit
@@ -151,21 +142,15 @@ class LinkTree:
 
 
 class BytestringTree:
-    @staticmethod
-    def leaf_length(leaf: Block) -> int:
-        if not isinstance(leaf, DataBlock):
-            raise ValueError(f"Expected DataBlock, got {type(leaf).__name__}")
-        return len(leaf.get_data())
-
     def __init__(self, root: Block, store: BlockStore) -> None:
-        self.tree = LinkTree(root, store, self.leaf_length)
+        self.tree = LinkTree(root, store)
 
     def to_bytes(self) -> bytes:
         _start, leaves = self.tree.collect_leaves()
         if not all(isinstance(leaf, DataBlock) for leaf in leaves):
             raise ValueError("Expected DataBlock leaves")
         data_leaves = t.cast(list[DataBlock], leaves)
-        return b"".join(leaf.get_data() for leaf in data_leaves)
+        return b"".join(leaf.data for leaf in data_leaves)
 
 
 class TreeArray(ABC, t.Sequence[T], t.Generic[T, ElemType, EntryType]):
@@ -189,16 +174,11 @@ class TreeArray(ABC, t.Sequence[T], t.Generic[T, ElemType, EntryType]):
         store: BlockStore,
         decode_element: t.Callable[[ElemType], T],
     ) -> None:
-        self.tree = LinkTree(block, store, self.leaf_length)
+        self.tree = LinkTree(block, store)
         self.decode_element = decode_element
 
     def __len__(self) -> int:
         return len(self.tree)
-
-    @abstractmethod
-    def leaf_length(self, leaf: Block) -> int:
-        """The number of elements stored in a leaf block."""
-        raise NotImplementedError
 
     @abstractmethod
     def entry_to_element(self, entry: EntryType) -> ElemType:
@@ -243,7 +223,7 @@ class TreeArray(ABC, t.Sequence[T], t.Generic[T, ElemType, EntryType]):
         return all(a == b for a, b in zip(self, other))
 
 
-class DataArray(TreeArray[T, bytes, memoryview]):
+class DataArray(TreeArray[T, bytes, bytes]):
     def __init__(
         self,
         root: Block,
@@ -256,18 +236,26 @@ class DataArray(TreeArray[T, bytes, memoryview]):
         self.elem_size = elem_size
         self.elem_align = elem_align
 
-    def leaf_length(self, leaf: Block) -> int:
+    def _verify_leaf(self, leaf: Block) -> DataBlock:
         if not isinstance(leaf, DataBlock):
             raise ValueError(f"Expected DATA leaf, got {type(leaf).__name__}")
-        return leaf.array_length(self.elem_size, align=self.elem_align)
+        if leaf.elem_size != self.elem_size:
+            raise ValueError(
+                f"DATA block elem_size {leaf.elem_size} does not match "
+                f"expected {self.elem_size}"
+            )
+        if leaf.elem_align != self.elem_align:
+            raise ValueError(
+                f"DATA block elem_align {leaf.elem_align} does not match "
+                f"expected {self.elem_align}"
+            )
+        return leaf
 
-    def leaf_to_list(self, leaf: Block) -> t.Sequence[memoryview]:
-        if not isinstance(leaf, DataBlock):
-            raise ValueError(f"Expected DATA leaf, got {type(leaf).__name__}")
-        return leaf.get_array(self.elem_size, align=self.elem_align)
+    def leaf_to_list(self, leaf: Block) -> t.Sequence[bytes]:
+        return list(self._verify_leaf(leaf))
 
-    def entry_to_element(self, entry: memoryview) -> bytes:
-        return bytes(entry)
+    def entry_to_element(self, entry: bytes) -> bytes:
+        return entry
 
 
 class BytestringArray(TreeArray[T, bytes, bytes | Link | Block]):
@@ -280,25 +268,21 @@ class BytestringArray(TreeArray[T, bytes, bytes | Link | Block]):
         super().__init__(root, store, decode_element)
         self.store = store
 
-    def leaf_length(self, leaf: Block) -> int:
-        if isinstance(leaf, SlotsBlock):
-            return leaf.element_count()
-        if isinstance(leaf, TableBlock):
-            return len(leaf.vtable)
-        raise ValueError(
-            f"Expected SlotsBlock or TableBlock, got {type(leaf).__name__}"
-        )
-
     def leaf_to_list(self, leaf: Block) -> t.Sequence[bytes | Link | Block]:
         if isinstance(leaf, SlotsBlock):
             return leaf.get_entries()
         if isinstance(leaf, TableBlock):
             leaves: list[Link | Block] = []
-            for i in range(len(leaf.vtable)):
-                block = leaf.get_block(i)
-                if block is None:
-                    raise ValueError("NULL entry as a leaf")
-                leaves.append(block)
+            for entry in leaf:
+                match entry:
+                    case BlockEntry(block=block):
+                        leaves.append(block)
+                    case LinkEntry(link=link):
+                        leaves.append(link)
+                    case _:
+                        raise ValueError(
+                            f"Expected BlockEntry or LinkEntry, got {type(entry).__name__}"
+                        )
             return leaves
         raise ValueError(
             f"Expected SlotsBlock or TableBlock, got {type(leaf).__name__}"
@@ -325,20 +309,20 @@ class TableArray(TreeArray[T, Block, Block | Link]):
         super().__init__(root, store, decode_element)
         self.store = store
 
-    def leaf_length(self, leaf: Block) -> int:
-        if not isinstance(leaf, TableBlock):
-            raise ValueError(f"Expected TableBlock, got {type(leaf).__name__}")
-        return len(leaf.vtable)
-
     def leaf_to_list(self, leaf: Block) -> t.Sequence[Block | Link]:
         if not isinstance(leaf, TableBlock):
             raise ValueError(f"Expected TableBlock, got {type(leaf).__name__}")
-        blocks = [leaf.get_block(i) for i in range(len(leaf.vtable))]
         result: list[Block | Link] = []
-        for block in blocks:
-            if block is None:
-                raise ValueError("NULL entry as a leaf")
-            result.append(block)
+        for entry in leaf:
+            match entry:
+                case BlockEntry(block=block):
+                    result.append(block)
+                case LinkEntry(link=link):
+                    result.append(link)
+                case _:
+                    raise ValueError(
+                        f"Expected BlockEntry or LinkEntry, got {type(entry).__name__}"
+                    )
         return result
 
     def entry_to_element(self, entry: Block | Link) -> Block:
@@ -353,40 +337,36 @@ class TableArray(TreeArray[T, Block, Block | Link]):
 # ============================================================
 
 
-def build_bytestring_tree(
-    data: bytes,
-    store: BlockStore,
-) -> BlockEntry:
+def build_bytestring_tree(data: bytes, store: BlockStore) -> Block:
     """Build a bytestring tree from a list of bytes."""
     if not data:
-        block = DataBlock.build(b"")
-        return BlockEntry.from_data(block, 1, 0)
+        return DataBlock.build(b"", elem_size=1, elem_align=1)
 
-    blocks: list[BlockEntry] = []
-    max_data_size = SIZE_MAX - 2
+    blocks: list[Block] = []
+    max_data_size = SIZE_MAX - 4  # block header + elem_info
     for i in range(0, len(data), max_data_size):
         chunk = data[i : i + max_data_size]
-        block = DataBlock.build(chunk)
-        blocks.append(BlockEntry.from_data(block, 1, len(chunk)))
+        block = DataBlock.build(chunk, elem_size=1, elem_align=1)
+        blocks.append(block)
     return linktree_reduce(blocks, store)
 
 
 def build_data_array(
     elements: list[bytes],
+    elem_size: int,
     elem_align: int,
     store: BlockStore,
-) -> BlockEntry:
+) -> Block:
     """Build a DATA array, possibly spanning multiple blocks as a link tree.
 
-    All elements must be the same size (derived from elements[0]).
+    All elements must be the same size. `elem_size` is the unpadded element size,
+    used for the DATA block's elem_info header (and verified against elements).
     """
     if not elements:
-        block = DataBlock.build(b"", align=elem_align)
-        return BlockEntry.from_data(block, elem_align, 0)
+        return DataBlock.build(b"", elem_size=elem_size, elem_align=elem_align)
 
-    elem_size = len(elements[0])
-    padded = padded_element_size(elem_size, elem_align)
-    start_offset = max(elem_align, 2)
+    padded = align_up(elem_size, elem_align)
+    start_offset = max(elem_align, 4)
     max_elems_per_block = (SIZE_MAX - start_offset) // padded
 
     if max_elems_per_block == 0:
@@ -395,25 +375,21 @@ def build_data_array(
         )
 
     # Chunk into multiple blocks
-    blocks: list[BlockEntry] = []
+    blocks: list[Block] = []
     for chunk in itertools.batched(elements, max_elems_per_block):
         block = DataBlock.build_array(list(chunk), align=elem_align)
-        blocks.append(BlockEntry(block, elem_align, len(chunk)))
+        blocks.append(block)
 
     return linktree_reduce(blocks, store)
 
 
-def build_bytestring_array(
-    elements: t.Sequence[bytes],
-    store: BlockStore,
-) -> BlockEntry:
+def build_bytestring_array(elements: t.Sequence[bytes], store: BlockStore) -> Block:
     """Build a SLOTS array, possibly spanning multiple blocks as a link tree."""
     if not elements:
-        block = SlotsBlock.build_slots([])
-        return BlockEntry.from_slots(block)
+        return SlotsBlock.build_slots([])
 
     # Pack elements into SLOTS blocks sequentially
-    blocks: list[BlockEntry] = []
+    blocks: list[Block] = []
     current_items: list[bytes] = []
     current_block_size = 2 + 2  # header + sentinel
 
@@ -423,7 +399,7 @@ def build_bytestring_array(
         if not current_items:
             return
         block = SlotsBlock.build_slots(current_items)
-        blocks.append(BlockEntry.from_slots(block))
+        blocks.append(block)
         current_items.clear()
 
     for elem in elements:
@@ -432,8 +408,8 @@ def build_bytestring_array(
         if 2 + 4 + len(elem) > SIZE_MAX:
             seal_current()
             bytestring_tree = build_bytestring_tree(elem, store)
-            table = Table([bytestring_tree])
-            blocks.append(table.build_entry(store))
+            table = Table([BlockEntry(bytestring_tree)])
+            blocks.append(table.build(store))
             continue
 
         # Check if adding this element and its offset would exceed block size
@@ -450,27 +426,23 @@ def build_bytestring_array(
     return linktree_reduce(blocks, store)
 
 
-def build_table_array(
-    elements: t.Sequence[TableEntry],
-    store: BlockStore,
-) -> BlockEntry:
+def build_table_array(elements: t.Sequence[TableEntry], store: BlockStore) -> Block:
     """Build a TABLE array of complex elements.
 
     Uses the "always inline" algorithm: embed each element as a BLOCK entry
     when possible, fall back to LINK for elements too large to ever embed.
     """
     if not elements:
-        block = TableBlock.build([], b"")
-        return BlockEntry.from_table(block, 2)
+        return TableBlock.build([], b"")
 
-    result_blocks: list[BlockEntry] = []
+    result_blocks: list[Block] = []
     current_table = Table([])
 
     def seal_current() -> None:
         nonlocal current_table
         if not current_table.entries:
             return
-        result_blocks.append(current_table.build_entry(store))
+        result_blocks.append(current_table.build(store))
         current_table = Table([])
 
     for elem in elements:
@@ -479,7 +451,7 @@ def build_table_array(
             table_alone.fit(store)
         except ValueError:
             # Too large to embed; use LINK
-            elem = elem.outlink(store)
+            elem = outlink(elem, store)
 
         # Does it fit in the current block?
         trial = Table(current_table.entries + [elem])
@@ -495,14 +467,11 @@ def build_table_array(
     return linktree_reduce(result_blocks, store)
 
 
-def linktree_reduce(
-    leaf_blocks: list[BlockEntry],
-    store: BlockStore,
-) -> BlockEntry:
+def linktree_reduce(leaf_blocks: t.Sequence[Block], store: BlockStore) -> Block:
     """Reduces a non-empty list to a single root block.
 
-    Returns a single StoredBlock. If the list has just one element, it is
-    returned. Otherwise, builds a link tree from the list and returns its root.
+    Returns a single Block. If the list has just one element, it is returned.
+    Otherwise, builds a link tree from the list and returns its root.
     """
     if not leaf_blocks:
         raise ValueError("Cannot build links tree from empty list")
@@ -524,14 +493,12 @@ def linktree_reduce(
     else:
         tail = []
 
-    links = [
-        Link(store.store(entry.block), entry.element_count) for entry in leaf_blocks
-    ]
-    inner_blocks: list[BlockEntry] = []
+    links = [Link(store.store(entry), entry.element_count()) for entry in leaf_blocks]
+    inner_blocks: list[Block] = []
 
     for chunk in itertools.batched(links, max_links_per_block):
         block = LinksBlock.build(limits_to_cumulative(chunk))
-        inner_blocks.append(BlockEntry.from_link(block))
+        inner_blocks.append(block)
 
     # ...reattach the tail for recursive call
     inner_blocks.extend(tail)

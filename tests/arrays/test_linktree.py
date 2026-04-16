@@ -16,18 +16,12 @@ def store() -> BlockStore:
 
 
 def data_leaf(data: bytes) -> DataBlock:
-    return DataBlock.build(data)
-
-
-def data_leaf_length(block: Block) -> int:
-    if not isinstance(block, DataBlock):
-        raise ValueError(f"Expected DataBlock, got {type(block).__name__}")
-    return len(block.get_data())
+    return DataBlock.build(data, elem_size=1, elem_align=1)
 
 
 def assert_leaf_data(block: Block, expected: bytes) -> None:
     assert isinstance(block, DataBlock)
-    assert bytes(block.get_data()) == expected
+    assert bytes(block.data) == expected
 
 
 def build_links_block(store: BlockStore, leaves: list[DataBlock]) -> LinksBlock:
@@ -35,7 +29,7 @@ def build_links_block(store: BlockStore, leaves: list[DataBlock]) -> LinksBlock:
     links = []
     for leaf in leaves:
         digest = store.store(leaf)
-        links.append(Link(digest, len(leaf.get_data())))
+        links.append(Link(digest, len(leaf.data)))
     return LinksBlock.build(limits_to_cumulative(links))
 
 
@@ -47,7 +41,7 @@ def build_two_level_tree(
     for group in leaf_groups:
         inner = build_links_block(store, group)
         digest = store.store(inner)
-        total = sum(len(leaf.get_data()) for leaf in group)
+        total = sum(len(leaf.data) for leaf in group)
         inner_links.append(Link(digest, total))
     return LinksBlock.build(limits_to_cumulative(inner_links))
 
@@ -55,21 +49,21 @@ def build_two_level_tree(
 class TestLinkTreeLen:
     def test_leaf_root(self, store: BlockStore) -> None:
         leaf = data_leaf(b"hello")
-        tree = LinkTree(leaf, store, data_leaf_length)
+        tree = LinkTree(leaf, store)
         assert len(tree) == 5
 
     def test_links_root(self, store: BlockStore) -> None:
         leaf1 = data_leaf(b"abc")
         leaf2 = data_leaf(b"de")
         root = build_links_block(store, [leaf1, leaf2])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         assert len(tree) == 5
 
 
 class TestLinkTreeFindLeaf:
     def test_short_circuit_non_links(self, store: BlockStore) -> None:
         leaf = data_leaf(b"hello")
-        tree = LinkTree(leaf, store, data_leaf_length)
+        tree = LinkTree(leaf, store)
         idx, block = tree.find_leaf(2)
         assert idx == 2
         assert block is leaf
@@ -78,7 +72,7 @@ class TestLinkTreeFindLeaf:
         leaf1 = data_leaf(b"abc")
         leaf2 = data_leaf(b"de")
         root = build_links_block(store, [leaf1, leaf2])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
 
         # Index 0 should land in leaf1
         idx, block = tree.find_leaf(0)
@@ -95,7 +89,7 @@ class TestLinkTreeFindLeaf:
         leaf1 = data_leaf(b"abc")  # elements [0, 3)
         leaf2 = data_leaf(b"de")  # elements [3, 5)
         root = build_links_block(store, [leaf1, leaf2])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
 
         # Index 3 should land in leaf2 (relative index 0 within leaf2)
         idx, block = tree.find_leaf(3)
@@ -106,7 +100,7 @@ class TestLinkTreeFindLeaf:
         leaves1 = [data_leaf(b"ab"), data_leaf(b"cd")]
         leaves2 = [data_leaf(b"efg")]
         root = build_two_level_tree(store, [leaves1, leaves2])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
 
         # Total: 2+2+3 = 7 bytes
         assert len(tree) == 7
@@ -126,7 +120,7 @@ class TestLinkTreeFindLeaf:
         leaves1 = [data_leaf(b"ab"), data_leaf(b"cd")]  # 4 elements total
         leaves2 = [data_leaf(b"efg")]  # 3 elements
         root = build_two_level_tree(store, [leaves1, leaves2])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
 
         # Index 4 → first element of second group
         idx, block = tree.find_leaf(4)
@@ -140,7 +134,7 @@ class TestLinkTreeFindLeaf:
         inner = LinksBlock.build([Link(digest, 3)])
         inner_digest = store.store(inner)
         root = LinksBlock.build([Link(inner_digest, 999)])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         with pytest.raises(ValueError, match="Expected 999 elements, got 3"):
             tree.find_leaf(0)
 
@@ -149,7 +143,7 @@ class TestLinkTreeFindLeaf:
         leaf = data_leaf(b"abc")  # actual length = 3
         digest = store.store(leaf)
         root = LinksBlock.build([Link(digest, 10)])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         with pytest.raises(ValueError, match="Expected 10 elements, got 3"):
             tree.find_leaf(0)
 
@@ -157,20 +151,20 @@ class TestLinkTreeFindLeaf:
 class TestLinkTreeCollectLeaves:
     def test_non_links_root(self, store: BlockStore) -> None:
         leaf = data_leaf(b"hello")
-        tree = LinkTree(leaf, store, data_leaf_length)
+        tree = LinkTree(leaf, store)
         start, leaves = tree.collect_leaves()
         assert len(leaves) == 1
         assert leaves[0] is leaf
 
     def test_empty_range(self, store: BlockStore) -> None:
         leaf = data_leaf(b"hello")
-        tree = LinkTree(leaf, store, data_leaf_length)
+        tree = LinkTree(leaf, store)
         start, leaves = tree.collect_leaves(slice(3, 3))
         assert leaves == []
 
     def test_step_not_supported(self, store: BlockStore) -> None:
         leaf = data_leaf(b"hello")
-        tree = LinkTree(leaf, store, data_leaf_length)
+        tree = LinkTree(leaf, store)
         with pytest.raises(NotImplementedError, match="Step"):
             tree.collect_leaves(slice(0, 5, 2))
 
@@ -178,7 +172,7 @@ class TestLinkTreeCollectLeaves:
         leaf1 = data_leaf(b"abc")
         leaf2 = data_leaf(b"de")
         root = build_links_block(store, [leaf1, leaf2])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         start, leaves = tree.collect_leaves()
         assert start == 0
         assert len(leaves) == 2
@@ -189,19 +183,19 @@ class TestLinkTreeCollectLeaves:
         leaf2 = data_leaf(b"de")  # elements 3-4
         leaf3 = data_leaf(b"fgh")  # elements 5-7
         root = build_links_block(store, [leaf1, leaf2, leaf3])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         # Request only elements 3-4 (should only return leaf2)
         start, leaves = tree.collect_leaves(slice(3, 5))
         assert len(leaves) == 1
         assert isinstance(leaves[0], DataBlock)
-        assert bytes(leaves[0].get_data()) == b"de"
+        assert bytes(leaves[0].data) == b"de"
         assert start == 3
 
     def test_multi_level_dfs(self, store: BlockStore) -> None:
         leaves1 = [data_leaf(b"ab"), data_leaf(b"cd")]
         leaves2 = [data_leaf(b"efg")]
         root = build_two_level_tree(store, [leaves1, leaves2])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         start, leaves = tree.collect_leaves()
         assert start == 0
         assert len(leaves) == 3
@@ -212,7 +206,7 @@ class TestLinkTreeCollectLeaves:
         inner = LinksBlock.build([Link(digest, 3)])
         inner_digest = store.store(inner)
         root = LinksBlock.build([Link(inner_digest, 999)])
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         with pytest.raises(ValueError, match="Expected 999 elements, got 3"):
             tree.collect_leaves()
 
@@ -221,6 +215,6 @@ class TestLinkTreeCollectLeaves:
         leaf = data_leaf(b"abc")  # actual = 3
         digest = store.store(leaf)
         root = LinksBlock.build([Link(digest, 10)])  # claims 10
-        tree = LinkTree(root, store, data_leaf_length)
+        tree = LinkTree(root, store)
         with pytest.raises(ValueError, match="Expected 10 elements, got 3"):
             tree.collect_leaves()

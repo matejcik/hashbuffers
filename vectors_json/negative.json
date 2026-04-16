@@ -332,9 +332,9 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "4de73046b60746f8e21d2b390396c46fe0e6e3a6531808dad29a4619a6eaf050",
+    "root_digest": "93439adbc9ac7a36f8761969e63a338befcd7d1181c760d359b56372e3ea105c",
     "store": {
-      "4de73046b60746f8e21d2b390396c46fe0e6e3a6531808dad29a4619a6eaf050": "04400000"
+      "93439adbc9ac7a36f8761969e63a338befcd7d1181c760d359b56372e3ea105c": "04400100"
     },
     "error": "Expected TABLE block, got DATA"
   },
@@ -417,10 +417,60 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "9f340a515ca9676276c357ad5b39f7566617a9ecf4db29cd3488c49d1d0ce901",
+    "root_digest": "9feee690074f6242ccc283e2c00190bbb00ea94818a9c4850817957df35dadfa",
     "store": {
-      "9f340a515ca9676276c357ad5b39f7566617a9ecf4db29cd3488c49d1d0ce901": "1e00020008400ea000000000424210400000000000000000000000000000"
+      "9feee690074f6242ccc283e2c00190bbb00ea94818a9c4850817957df35dadfa": "1e00020008400ea000000000424210400440000000000000000000000000"
     },
     "error": "Fixed array BLOCK entry is not properly aligned"
+  },
+  {
+    "name": "directdata_params_nonzero",
+    "description": "DIRECTDATA header with non-zero params (reserved)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "data",
+              "type": "bytes"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "c0d68416bdc4132e38704e52eafced564855575956c533e4371d1732e153c706",
+    "store": {
+      "c0d68416bdc4132e38704e52eafced564855575956c533e4371d1732e153c706": "0a00010006200220abcd"
+    },
+    "error": "DIRECTDATA header params are not zero"
+  },
+  {
+    "name": "directdata_length_exceeds_block",
+    "description": "DIRECTDATA at offset 6 claims length 100 but block is too small",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "data",
+              "type": "bytes"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "b012c04f4fdb5206191a710b088f772def476e1be41529a89f098f826344042d",
+    "store": {
+      "b012c04f4fdb5206191a710b088f772def476e1be41529a89f098f826344042d": "0c0001000620640000000000"
+    },
+    "error": "DIRECTDATA data exceeds block size"
   }
 ]

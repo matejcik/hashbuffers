@@ -12,12 +12,12 @@ from ..arrays import (
     build_data_array,
     build_table_array,
 )
-from ..codec import SIZE_MAX, Block, DataBlock, Link, TableBlock, VTableEntryType
-from ..fitting import BlockEntry, TableEntry
+from ..codec import SIZE_MAX, Block, DataBlock
+from ..codec.table import BlockEntry, DirectDataEntry, TableEntry
 from ..store import BlockStore
-from ..util import pack_flat_array, padded_element_size, unpack_flat_array
-from .abc import BlockDecoderType, FieldType, FixedFieldType
+from ..util import align_up, pack_flat_array, unpack_flat_array
 from .adapter import AdapterCodec
+from .common import BlockDecoderType, FieldType, FixedFieldType, resolve_entry_to_block
 
 T = t.TypeVar("T")
 
@@ -27,10 +27,8 @@ class FixedArrayType(FixedFieldType[t.Sequence[T]]):
     count: int
 
     def __init__(self, element_type: FixedFieldType[T], count: int) -> None:
-        padded_size = padded_element_size(
-            element_type.get_size(), element_type.get_alignment()
-        )
-        start_offset = max(element_type.get_alignment(), 2)
+        padded_size = align_up(element_type.get_size(), element_type.get_alignment())
+        start_offset = max(element_type.get_alignment(), 4)
         if not 0 <= (count * padded_size) <= (SIZE_MAX - start_offset):
             raise ValueError(f"Array size {count * padded_size} is too large")
 
@@ -60,57 +58,54 @@ class FixedArrayType(FixedFieldType[t.Sequence[T]]):
         return [self.element_type.decode_bytes(v) for v in byte_values]
 
     def encode(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
+        encoded = self.encode_bytes(value)
+        if self.get_alignment() == 1 and 2 + len(encoded) <= SIZE_MAX:
+            return DirectDataEntry(encoded)
         data_block = DataBlock.build(
-            self.encode_bytes(value), align=self.get_alignment()
+            encoded,
+            elem_size=self.element_type.get_size(),
+            elem_align=self.get_alignment(),
         )
-        return BlockEntry.from_data(data_block, self.get_alignment(), self.count)
+        return BlockEntry(data_block)
 
-    def decode(
-        self, table: TableBlock, index: int, store: BlockStore
-    ) -> t.Sequence[T] | None:
-        # TODO nicer interface for table.get
-        entry = table.vtable[index]
-        if entry.type == VTableEntryType.BLOCK:
-            block = table.get_block(index)
-            if not isinstance(block, DataBlock):
-                raise ValueError(f"Expected DATA block, got {type(block)}")
-            align = self.get_alignment()
-            if entry.offset % align != 0:
-                raise ValueError(
-                    f"Fixed array BLOCK entry at offset {entry.offset} "
-                    f"is not aligned to element alignment {align}"
-                )
-            data = bytes(block.get_data(align=self.get_alignment()))
-            return self.decode_bytes(data)
+    def _verify_data_block(self, block: DataBlock) -> None:
+        expected_size = self.element_type.get_size()
+        expected_align = self.get_alignment()
+        if block.elem_size != expected_size:
+            raise ValueError(
+                f"DATA block elem_size {block.elem_size} does not match "
+                f"expected {expected_size}"
+            )
+        if block.elem_align != expected_align:
+            raise ValueError(
+                f"DATA block elem_align {block.elem_align} does not match "
+                f"expected {expected_align}"
+            )
 
-        if entry.type == VTableEntryType.LINK:
-            link = table.get_block(index)
-            assert isinstance(link, Link)
-            if link.limit != self.count:
-                raise ValueError(
-                    f"FixedArray expects {self.count} elements, got {link.limit}"
-                )
-            block = store.fetch(link.digest)
-            if not isinstance(block, DataBlock):
-                raise ValueError(f"Expected DATA block, got {type(block)}")
-            data = bytes(block.get_data(align=self.get_alignment()))
-            return self.decode_bytes(data)
-
-        raise ValueError(f"Expected BLOCK or LINK entry, got {entry.type}")
+    def decode(self, entry: TableEntry, store: BlockStore) -> t.Sequence[T]:
+        if isinstance(entry, DirectDataEntry):
+            return self.decode_bytes(entry.data)
+        block = resolve_entry_to_block(entry, store, expected_limit=self.count)
+        if not isinstance(block, DataBlock):
+            raise ValueError(f"Expected DATA block, got {type(block)}")
+        self._verify_data_block(block)
+        data = bytes(block.get_data())
+        return self.decode_bytes(data)
 
 
 class BytestringType(FieldType[bytes]):
     def encode(self, value: bytes, store: BlockStore) -> TableEntry:
-        return build_bytestring_tree(value, store)
+        # DIRECTDATA header is 2 bytes, so max payload is SIZE_MAX - 2
+        # but also need to fit on heap, so fitting will outlink if needed
+        if 2 + len(value) <= SIZE_MAX:
+            return DirectDataEntry(value)
+        block = build_bytestring_tree(value, store)
+        return BlockEntry(block)
 
-    def decode(self, table: TableBlock, index: int, store: BlockStore) -> bytes | None:
-        block_or_link = table.get_block(index)
-        if block_or_link is None:
-            return None
-        if isinstance(block_or_link, Link):
-            block = store.fetch(block_or_link.digest)
-        else:
-            block = block_or_link
+    def decode(self, entry: TableEntry, store: BlockStore) -> bytes:
+        if isinstance(entry, DirectDataEntry):
+            return entry.data
+        block = resolve_entry_to_block(entry, store)
         return BytestringTree(block, store).to_bytes()
 
 
@@ -122,15 +117,8 @@ class VarArrayType(BlockDecoderType[t.Sequence[T]]):
         if self.count is not None and actual_count != self.count:
             raise ValueError(f"Array expects {self.count} elements, got {actual_count}")
 
-    def decode(
-        self, table: TableBlock, index: int, store: BlockStore
-    ) -> t.Sequence[T] | None:
-        block = table.get_block(index)
-        if block is None:
-            return None
-        if isinstance(block, Link):
-            self.check_count(block.limit)
-            block = store.fetch(block.digest)
+    def decode(self, entry: TableEntry, store: BlockStore) -> t.Sequence[T]:
+        block = resolve_entry_to_block(entry, store)
         array = self.block_decoder(store)(block)
         self.check_count(len(array))
         return array
@@ -160,7 +148,8 @@ class BytestringArrayType(VarArrayType[T]):
 
     def encode(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
         self.check_count(len(value))
-        return build_bytestring_array([self.adapter.encode(v) for v in value], store)
+        block = build_bytestring_array([self.adapter.encode(v) for v in value], store)
+        return BlockEntry(block)
 
     def to_array(self, block: Block, store: BlockStore) -> t.Sequence[T]:
         return BytestringArray(block, store, decode_element=self.adapter.decode)
@@ -178,7 +167,13 @@ class DataArrayType(VarArrayType[T]):
     def encode(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
         self.check_count(len(value))
         byte_values = [self.element_type.encode_bytes(v) for v in value]
-        return build_data_array(byte_values, self.element_type.get_alignment(), store)
+        block = build_data_array(
+            byte_values,
+            self.element_type.get_size(),
+            self.element_type.get_alignment(),
+            store,
+        )
+        return BlockEntry(block)
 
     def to_array(self, block: Block, store: BlockStore) -> t.Sequence[T]:
         return DataArray(
@@ -202,7 +197,8 @@ class BlockArrayType(VarArrayType[T]):
     def encode(self, value: t.Sequence[T], store: BlockStore) -> TableEntry:
         self.check_count(len(value))
         blocks = [self.block_decoder_type.encode(v, store) for v in value]
-        return build_table_array(blocks, store)
+        block = build_table_array(blocks, store)
+        return BlockEntry(block)
 
     def to_array(self, block: Block, store: BlockStore) -> t.Sequence[T]:
         return TableArray(

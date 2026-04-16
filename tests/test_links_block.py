@@ -48,8 +48,8 @@ def test_links_block_single_link():
     """Single link with limit > 0 is valid."""
     block = LinksBlock.build([Link(b"a" * 32, 50)])
     decoded = LinksBlock.decode(block.encode())
-    assert len(decoded.links) == 1
-    assert decoded.links[0].limit == 50
+    assert len(decoded) == 1
+    assert decoded[0].limit == 50
 
 
 def test_links_block_empty_rejected():

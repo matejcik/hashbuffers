@@ -6,211 +6,57 @@ Maps to spec section "Fitting → Struct Member Fitting".
 from __future__ import annotations
 
 import typing as t
-from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
+
+from hashbuffers.codec.table import TableEntry
 
 from .codec import (
     SIZE_MAX,
-    Block,
     DataBlock,
     Link,
-    LinksBlock,
-    SlotsBlock,
     TableBlock,
-    VTableEntry,
+)
+from .codec.table import (
+    BlockEntry,
+    DirectDataEntry,
+    DirectFixedEntry,
+    InlineIntEntry,
+    LinkEntry,
+    TableEntry,
 )
 from .store import BlockStore
-from .util import bit_length
-
-INLINE_MAX_UNSIGNED = (1 << 13) - 1  # 8191
-INLINE_MIN_SIGNED = -(1 << 12)  # -4096
-INLINE_MAX_SIGNED = (1 << 12) - 1  # 4095
 
 
-class TableEntry(ABC):
-    @abstractmethod
-    def alignment(self) -> int:
-        raise NotImplementedError
-
-    @abstractmethod
-    def size(self) -> int:
-        raise NotImplementedError
-
-    @abstractmethod
-    def vtable_entry(self, offset: int) -> VTableEntry:
-        raise NotImplementedError
-
-    @abstractmethod
-    def encode(self) -> bytes:
-        raise NotImplementedError
-
-    @property
-    def preserves_alignment(self) -> bool:
-        return self.size() % self.alignment() == 0
-
-    @property
-    def align_score(self) -> tuple[int, bool]:
-        return (self.alignment(), self.preserves_alignment)
-
-    def can_outlink(self) -> bool:
-        return self.size() > Link.SIZE
-
-    def outlink(self, store: BlockStore) -> TableEntry:
-        raise NotImplementedError
-
-    def place(self, heap: bytearray, heap_offset: int) -> None:
-        start = heap_offset
-        end = start + self.size()
-        assert len(heap) >= end, "Heap is too small"
-        heap[start:end] = self.encode()
+def place(entry: TableEntry, heap: bytearray, heap_offset: int) -> None:
+    start = heap_offset
+    end = start + entry.size()
+    assert len(heap) >= end, "Heap is too small"
+    heap[start:end] = entry.encode()
 
 
-class InlineEntryBase(TableEntry):
-    def alignment(self) -> int:
-        return 0
-
-    def size(self) -> int:
-        return 0
-
-    def encode(self) -> bytes:
-        return b""
-
-    def can_outlink(self) -> bool:
-        return False
+def can_outlink(entry: TableEntry) -> bool:
+    return entry.size() > Link.SIZE
 
 
-@dataclass
-class InlineIntEntry(InlineEntryBase):
-    value: int
-    signed: bool
-
-    def __post_init__(self) -> None:
-        if not self.fits(self.value, self.signed):
-            raise ValueError(f"Value {self.value} is too large for inline int")
-
-    @staticmethod
-    def fits(value: int, signed: bool) -> bool:
-        if not signed and value < 0:
-            return False
-        return bit_length(value, signed) <= 13
-
-    def vtable_entry(self, offset: int) -> VTableEntry:
-        # value & SIZE_MAX converts signed to unsigned
-        return VTableEntry.inline(self.value & SIZE_MAX)
-
-    def outlink(self, store: BlockStore) -> TableEntry:
-        raise ValueError("Inline ints cannot be outlinked")
-
-
-class NullEntry(InlineEntryBase):
-    def vtable_entry(self, offset: int) -> VTableEntry:
-        return VTableEntry.null()
-
-
-NULL_ENTRY = NullEntry()
-
-
-@dataclass
-class DirectEntry(TableEntry):
-    data: bytes
-
-    def __post_init__(self) -> None:
-        if len(self.data) not in (4, 8):
-            raise ValueError(f"Invalid data size: {len(self.data)} (must be 4 or 8)")
-
-    def alignment(self) -> int:
-        return len(self.data)
-
-    def size(self) -> int:
-        return len(self.data)
-
-    def vtable_entry(self, offset: int) -> VTableEntry:
-        if len(self.data) == 4:
-            return VTableEntry.direct4(offset)
-        if len(self.data) == 8:
-            return VTableEntry.direct8(offset)
-        raise RuntimeError("Unsupported direct size")
-
-    def encode(self) -> bytes:
-        return self.data
-
-    @classmethod
-    def from_int(cls, value: int, signed: bool) -> t.Self:
-        if not signed and value < 0:
-            raise OverflowError(f"Value {value} is negative for signed type")
-        if bit_length(value, signed) > 32:
-            return cls(value.to_bytes(8, "little", signed=signed))
-        return cls(value.to_bytes(4, "little", signed=signed))
-
-    def can_outlink(self) -> bool:
-        return False
-
-
-@dataclass
-class BlockEntry(TableEntry):
-    block: Block
-    data_alignment: int
-    element_count: int
-
-    def alignment(self) -> int:
-        # the alignment of an embedded block is always at least 2
-        return max(self.data_alignment, 2)
-
-    def size(self) -> int:
-        return self.block.size
-
-    def vtable_entry(self, offset: int) -> VTableEntry:
-        return VTableEntry.block(offset)
-
-    def encode(self) -> bytes:
-        return self.block.encode()
-
-    def outlink(self, store: BlockStore) -> TableEntry:
-        digest = store.store(self.block)
-        return LinkEntry(Link(digest, self.element_count))
-
-    @classmethod
-    def from_data(cls, data: DataBlock, alignment: int, element_count: int) -> t.Self:
-        return cls(data, alignment, element_count)
-
-    @classmethod
-    def from_table(cls, table: TableBlock, alignment: int) -> t.Self:
-        return cls(table, alignment, len(table.vtable))
-
-    @classmethod
-    def from_link(cls, link: LinksBlock) -> t.Self:
-        return cls(link, 4, link.links[-1].limit)
-
-    @classmethod
-    def from_slots(cls, slots: SlotsBlock) -> t.Self:
-        return cls(slots, 2, slots.element_count())
-
-
-@dataclass
-class LinkEntry(TableEntry):
-    link: Link
-
-    def alignment(self) -> int:
-        return 4
-
-    def size(self) -> int:
-        return Link.SIZE
-
-    def vtable_entry(self, offset: int) -> VTableEntry:
-        return VTableEntry.link(offset)
-
-    def encode(self) -> bytes:
-        return self.link.encode()
-
-    def outlink(self, store: BlockStore) -> TableEntry:
-        raise ValueError("Links cannot be outlinked")
+def outlink(entry: TableEntry, store: BlockStore) -> TableEntry:
+    match entry:
+        case DirectDataEntry():
+            block = DataBlock.build(entry.data, elem_size=1, elem_align=1)
+            element_count = entry.size()
+        case BlockEntry():
+            block = entry.block
+            element_count = block.element_count()
+        case _:
+            raise ValueError(f"Cannot outlink entry: {entry}")
+    digest = store.store(block)
+    link = Link(digest, element_count)
+    return LinkEntry(link)
 
 
 def int_inline_or_direct(value: int, signed: bool) -> TableEntry:
     if InlineIntEntry.fits(value, signed):
-        return InlineIntEntry(value, signed)
-    return DirectEntry.from_int(value, signed)
+        return InlineIntEntry.from_int(value, signed)
+    return DirectFixedEntry.from_int(value, signed)
 
 
 def _available_alignment(offset: int) -> int:
@@ -271,7 +117,12 @@ class Table:
 
         # sort within groups: (1) alignment-preserving, (2) smallest first
         for group in align_groups.values():
-            group.sort(key=lambda f: (f.entry.preserves_alignment, f.entry.size()))
+
+            def align_score(entry: TableEntry) -> tuple[bool, int]:
+                preserves_alignment = entry.size() % entry.alignment() == 0
+                return preserves_alignment, entry.size()
+
+            group.sort(key=lambda ep: align_score(ep.entry))
 
         while align_groups:
             # find the largest available alignment
@@ -325,7 +176,7 @@ class Table:
         StoredBlocks ≤ 36 bytes are always embedded. Larger StoredBlocks use
         smallest-first heuristic; overflow becomes LINK entries.
         """
-        optionals = [(i, e) for i, e in enumerate(self.entries) if e.can_outlink()]
+        optionals = [(i, e) for i, e in enumerate(self.entries) if can_outlink(e)]
         # Sort optional by size ascending (smallest first for packing heuristic)
         optionals.sort(key=lambda x: x[1].size())
 
@@ -339,7 +190,7 @@ class Table:
                     # and still don't fit, so we can't fit the table
                     raise
                 idx, last_block = optionals.pop()
-                link = last_block.outlink(store)
+                link = outlink(last_block, store)
                 self.entries[idx] = link
 
     def build(self, store: BlockStore) -> TableBlock:
@@ -358,10 +209,10 @@ class Table:
         heap = bytearray(self.heap_size)
         for i, entry in enumerate(self.entries):
             heap_offset = self.placement.get(i, 0)
-            entry.place(heap, heap_offset)
-            vtable.append(entry.vtable_entry(heap_start + heap_offset))
+            place(entry, heap, heap_offset)
+            vtable.append(entry.to_entry_raw(heap_start + heap_offset))
         return TableBlock.build(vtable, bytes(heap))
 
     def build_entry(self, store: BlockStore) -> BlockEntry:
         block = self.build(store)
-        return BlockEntry.from_table(block, self.alignment)
+        return BlockEntry(block)

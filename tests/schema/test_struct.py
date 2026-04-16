@@ -4,7 +4,8 @@ import typing as t
 
 import pytest
 
-from hashbuffers.codec import TableBlock, VTableEntryType
+from hashbuffers.codec import TableBlock
+from hashbuffers.codec.table import TableEntryType
 from hashbuffers.schema import (
     F64,
     I64,
@@ -130,7 +131,7 @@ class TestSparseIndex:
         table = TableBlock.decode(sb)
         assert len(table.vtable) == 11  # indices 0..10
         for i in range(1, 10):
-            assert table.vtable[i].type == VTableEntryType.NULL
+            assert table.vtable[i].type == TableEntryType.NULL
 
 
 # --- Required fields ---

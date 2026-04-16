@@ -1,11 +1,11 @@
 import struct
 from dataclasses import dataclass
 
-from ..codec import TableBlock
-from ..fitting import DirectEntry, TableEntry, int_inline_or_direct
+from ..codec.table import DirectFixedEntry, IntValue, TableEntry
+from ..fitting import int_inline_or_direct
 from ..store import BlockStore
 from ..util import bit_length
-from .abc import FixedFieldType
+from .common import FixedFieldType
 
 
 @dataclass(frozen=True)
@@ -33,8 +33,10 @@ class PrimitiveInt(FixedFieldType[int]):
             raise OverflowError(f"Value {value} is too large for {type_name}")
         return int_inline_or_direct(value, self.signed)
 
-    def decode(self, table: TableBlock, index: int, store: BlockStore) -> int | None:
-        return table.get_int(index, self.size, signed=self.signed)
+    def decode(self, entry: TableEntry, store: BlockStore) -> int:
+        if not isinstance(entry, IntValue):
+            raise ValueError(f"Expected IntValue, got {type(entry)}")
+        return entry.to_int(self.size, self.signed)
 
 
 @dataclass(frozen=True)
@@ -58,13 +60,12 @@ class PrimitiveFloat(FixedFieldType[float]):
         return struct.unpack(self.format, data)[0]
 
     def encode(self, value: float, store: BlockStore) -> TableEntry:
-        return DirectEntry(self.encode_bytes(value))
+        return DirectFixedEntry(self.encode_bytes(value))
 
-    def decode(self, table: TableBlock, index: int, store: BlockStore) -> float | None:
-        data = table.get_fixedsize(index, self.size)
-        if data is None:
-            return None
-        return self.decode_bytes(data)
+    def decode(self, entry: TableEntry, store: BlockStore) -> float:
+        if not isinstance(entry, DirectFixedEntry):
+            raise ValueError(f"Expected DirectFixedEntry, got {type(entry)}")
+        return self.decode_bytes(entry.data)
 
 
 U8 = PrimitiveInt(1, False)

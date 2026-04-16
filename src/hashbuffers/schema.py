@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import dataclass_transform
 
-from .codec import Block, Link, TableBlock, VTableEntryType
-from .data_model.abc import BlockDecoderType, FieldType, FixedFieldType
+from hashbuffers.data_model.common import resolve_entry_to_block
+
+from .codec import Block, TableBlock
+from .codec.table import BlockEntry, LinkEntry, TableEntry
 from .data_model.adapter import AdapterCodec
 from .data_model.array import (
     BlockArrayType,
@@ -21,8 +23,8 @@ from .data_model.array import (
     DataArrayType,
     FixedArrayType,
 )
+from .data_model.common import BlockDecoderType, FieldType, FixedFieldType
 from .data_model.struct import StructField, StructType
-from .fitting import BlockEntry, TableEntry
 from .store import BlockStore
 
 # primitive type reexports
@@ -62,12 +64,6 @@ class _LazyValue(t.Generic[T]):
         return self.value
 
 
-def _table_entry_type(table: TableBlock, index: int) -> VTableEntryType | None:
-    if index < 0 or index >= len(table.vtable):
-        return None
-    return table.vtable[index].type
-
-
 @dataclass(frozen=True)
 class _AdapterFieldType(FieldType[T], t.Generic[T, U]):
     inner: FieldType[U]
@@ -76,10 +72,8 @@ class _AdapterFieldType(FieldType[T], t.Generic[T, U]):
     def encode(self, value: T, store: BlockStore) -> TableEntry:
         return self.inner.encode(self.adapter.encode(value), store)
 
-    def decode(self, table: TableBlock, index: int, store: BlockStore) -> T | None:
-        value = self.inner.decode(table, index, store)
-        if value is None:
-            return None
+    def decode(self, entry: TableEntry, store: BlockStore) -> T:
+        value = self.inner.decode(entry, store)
         return self.adapter.decode(value)
 
 
@@ -111,14 +105,8 @@ class _HashBufferFieldType(BlockDecoderType[HB]):
     def encode(self, value: HB, store: BlockStore) -> TableEntry:
         return value._encode_table_entry(store)
 
-    def decode(self, table: TableBlock, index: int, store: BlockStore) -> HB | None:
-        block = table.get_block(index)
-        if block is None:
-            return None
-        if isinstance(block, Link):
-            if block.limit != 1:
-                raise ValueError(f"Expected LINK with limit 1, got {block.limit}")
-            block = store.fetch(block.digest)
+    def decode(self, entry: TableEntry, store: BlockStore) -> HB:
+        block = resolve_entry_to_block(entry, store, expected_limit=1)
         return self.block_decoder(store)(block)
 
     def block_decoder(self, store: BlockStore) -> t.Callable[[Block], HB]:
@@ -269,20 +257,18 @@ class Field(t.Generic[T]):
             return None
         return value
 
-    def _decode_now(self, table: TableBlock, store: BlockStore) -> T | None:
+    def _decode_now(self, entry: TableEntry, store: BlockStore) -> T | None:
         assert self.name is not None
-        value = self.field_type.decode(table, self.index, store)
+        value = self.field_type.decode_or_none(entry, store)
         if value is None and self.required:
-            raise ValueError(
-                f"Required field '{self.name}' (index {self.index}) is missing"
-            )
+            raise ValueError(f"Required field '{self.name}' is missing")
         return value
 
     def _decode_maybe_lazy(self, table: TableBlock, store: BlockStore) -> t.Any:
-        entry_type = _table_entry_type(table, self.index)
-        if entry_type == VTableEntryType.LINK:
-            return _LazyValue(lambda: self._decode_now(table, store))
-        return self._decode_now(table, store)
+        entry = table[self.index]
+        if isinstance(entry, LinkEntry):
+            return _LazyValue(lambda: self._decode_now(entry, store))
+        return self._decode_now(entry, store)
 
     @t.overload
     def __get__(self, instance: HashBuffer, owner: type[HashBuffer]) -> T | None: ...

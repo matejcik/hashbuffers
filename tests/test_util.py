@@ -3,25 +3,25 @@
 import pytest
 
 from hashbuffers.util import (
+    align_up,
     bit_length,
     pack_flat_array,
-    padded_element_size,
     unpack_flat_array,
 )
 
 
 class TestPaddedElementSize:
     def test_no_padding_needed(self):
-        assert padded_element_size(4, 4) == 4
+        assert align_up(4, 4) == 4
 
     def test_padding_applied(self):
-        assert padded_element_size(3, 4) == 4
+        assert align_up(3, 4) == 4
 
     def test_align_1(self):
-        assert padded_element_size(7, 1) == 7
+        assert align_up(7, 1) == 7
 
     def test_align_8(self):
-        assert padded_element_size(5, 8) == 8
+        assert align_up(5, 8) == 8
 
 
 class TestPackFlatArray:
@@ -50,12 +50,12 @@ class TestUnpackFlatArray:
 
     def test_non_divisible_length_raises(self):
         with pytest.raises(ValueError, match="not divisible"):
-            unpack_flat_array(b"\x01\x02\x03\x04\x05", 4, 4)
+            list(unpack_flat_array(b"\x01\x02\x03\x04\x05", 4, 4))
 
     def test_strips_padding(self):
         # 2-byte elements with align=4 → padded to 4 bytes each
         packed = pack_flat_array([b"\x01\x02", b"\x03\x04"], 4)
-        result = unpack_flat_array(packed, 2, 4)
+        result = list(unpack_flat_array(packed, 2, 4))
         assert len(result) == 2
         assert bytes(result[0]) == b"\x01\x02"
         assert bytes(result[1]) == b"\x03\x04"

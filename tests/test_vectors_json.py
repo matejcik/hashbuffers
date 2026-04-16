@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from hashbuffers.data_model.abc import FieldType
 from hashbuffers.data_model.array import (
     BlockArrayType,
     BytestringArrayType,
@@ -20,6 +19,7 @@ from hashbuffers.data_model.array import (
     DataArrayType,
     FixedArrayType,
 )
+from hashbuffers.data_model.common import FieldType
 from hashbuffers.data_model.struct import StructField, StructType
 from hashbuffers.schema_json import LoadedSchema, load_schema
 from hashbuffers.store import BlockStore

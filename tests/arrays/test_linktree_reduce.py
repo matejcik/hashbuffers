@@ -13,9 +13,8 @@ def store():
     return BlockStore(b"test-key")
 
 
-def make_leaf_entry(data: bytes = b"x") -> BlockEntry:
-    block = DataBlock.build(data)
-    return BlockEntry.from_data(block, 1, len(data))
+def make_leaf_block(data: bytes = b"x") -> DataBlock:
+    return DataBlock.build(data, elem_size=1, elem_align=1)
 
 
 class TestLinktreeReduce:
@@ -24,26 +23,26 @@ class TestLinktreeReduce:
             linktree_reduce([], store)
 
     def test_single_passthrough(self, store):
-        entry = make_leaf_entry()
-        result = linktree_reduce([entry], store)
-        assert result is entry
+        block = make_leaf_block()
+        result = linktree_reduce([block], store)
+        assert result is block
 
     def test_two_elements(self, store):
-        entries = [make_leaf_entry(b"a"), make_leaf_entry(b"b")]
-        result = linktree_reduce(entries, store)
-        assert isinstance(result.block, LinksBlock)
+        blocks = [make_leaf_block(b"a"), make_leaf_block(b"b")]
+        result = linktree_reduce(blocks, store)
+        assert isinstance(result, LinksBlock)
 
     def test_many_elements(self, store):
-        entries = [make_leaf_entry(b"x") for _ in range(50)]
-        result = linktree_reduce(entries, store)
-        assert isinstance(result.block, LinksBlock)
-        assert result.element_count == 50
+        blocks = [make_leaf_block(b"x") for _ in range(50)]
+        result = linktree_reduce(blocks, store)
+        assert isinstance(result, LinksBlock)
+        assert result.element_count() == 50
 
     def test_tail_optimization(self, store):
         """More than max_links_per_block blocks triggers tail split + recursive call."""
         max_links = (SIZE_MAX - 4) // 36  # 227
         # Create max_links + 1 entries to trigger the tail path
-        entries = [make_leaf_entry(b"x") for _ in range(max_links + 1)]
-        result = linktree_reduce(entries, store)
-        assert isinstance(result.block, LinksBlock)
-        assert result.element_count == max_links + 1
+        blocks = [make_leaf_block(b"x") for _ in range(max_links + 1)]
+        result = linktree_reduce(blocks, store)
+        assert isinstance(result, LinksBlock)
+        assert result.element_count() == max_links + 1

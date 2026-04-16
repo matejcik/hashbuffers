@@ -9,44 +9,42 @@ from hashbuffers.codec import (
     LinksBlock,
     SlotsBlock,
     TableBlock,
-    VTableEntry,
-    VTableEntryType,
     decode_block,
+)
+from hashbuffers.codec.table import (
+    TableEntryRaw,
+    TableEntryType,
 )
 
 
 def test_block_validate_size_mismatch():
-    block = DataBlock(BlockType.DATA, 1, b"")
+    block = DataBlock(BlockType.DATA, 1, b"", 1, 1)
     with pytest.raises(ValueError, match="does not match declared size"):
         block.validate()
 
 
 def test_block_minimum_size_rejected():
-    """Spec: The minimum valid size of a block is 2, smaller sizes MUST be rejected.
+    """Spec: The minimum valid size of a DATA block is 4.
 
     Block.validate() first checks compute_size == declared_size, then
-    checks _check_bounds(size, 2, SIZE_MAX). We need compute_size to
-    match the declared size so that the bounds check is actually reached.
-    The minimum DataBlock (empty data) has compute_size=2. Any block with
-    size < 2 will fail the size mismatch check before the bounds check.
-    This test verifies that the size mismatch check catches size=1, which
-    is functionally equivalent: a block with declared size < 2 is always
-    rejected.
+    checks _check_bounds(size, 2, SIZE_MAX). A DataBlock with empty data
+    has compute_size=4 (two t16 headers). Any block with size < 4 will
+    fail the size mismatch check. This test verifies that.
     """
-    block = DataBlock(BlockType.DATA, 1, b"")
+    block = DataBlock(BlockType.DATA, 1, b"", 1, 1)
     with pytest.raises(ValueError):
         block.validate()
 
 
 def test_decode_block_roundtrip_data():
-    data = DataBlock.build(b"payload").encode()
+    data = DataBlock.build(b"payload", elem_size=1, elem_align=1).encode()
     block = decode_block(data)
     assert isinstance(block, DataBlock)
-    assert block.get_data() == b"payload"
+    assert bytes(block.get_data()) == b"payload"
 
 
 def test_decode_block_roundtrip_table():
-    table = TableBlock.build([VTableEntry(VTableEntryType.NULL, 0)], b"").encode()
+    table = TableBlock.build([TableEntryRaw(TableEntryType.NULL, 0)], b"").encode()
     block = decode_block(table)
     assert isinstance(block, TableBlock)
 
@@ -65,6 +63,6 @@ def test_decode_block_roundtrip_links():
 
 def test_decode_block_rejects_trailing_data():
     """decode_block with exact=True (default) must reject trailing bytes."""
-    encoded = DataBlock.build(b"x").encode()
+    encoded = DataBlock.build(b"x", elem_size=1, elem_align=1).encode()
     with pytest.raises(IOError, match="Unparsed trailing data"):
         decode_block(encoded + b"trailing")

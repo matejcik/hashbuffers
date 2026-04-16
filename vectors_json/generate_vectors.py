@@ -17,8 +17,8 @@ from pathlib import Path
 from hashbuffers.codec import (
     BlockType,
     Tagged16,
-    VTableEntry,
 )
+from hashbuffers.codec.table import TableEntryRaw, TableEntryType
 from hashbuffers.schema import (
     U8,
     U16,
@@ -115,7 +115,7 @@ def negative(
 
 
 def build_table_bytes(
-    entries: list[VTableEntry], heap: bytes
+    entries: list[TableEntryRaw], heap: bytes
 ) -> bytes:
     """Manually build TABLE block bytes."""
     vtable_count = len(entries)
@@ -518,7 +518,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     vectors: list[dict[str, t.Any]] = []
 
     # 1. reserved_header_bit: bit 13 set in block header
-    valid = build_table_bytes([VTableEntry.null()], b"")
+    valid = build_table_bytes([TableEntryRaw(TableEntryType.NULL, 0)], b"")
     corrupted = bytearray(valid)
     # Header is LE u16 at [0:2]. Set bit 13 (reserved bit in BlockType encoding).
     hdr = int.from_bytes(corrupted[0:2], "little")
@@ -552,7 +552,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     # Build a TABLE where the vtable header has parameters != 0
     hdr_bytes = BlockType.TABLE.encode(6)  # header(2) + vtable_hdr(2) + 1 entry(2)
     vtable_hdr = Tagged16(0b001, 1).encode()  # reserved bits set, 1 entry
-    entry = VTableEntry.null().encode()
+    entry = TableEntryRaw(TableEntryType.NULL, 0).encode()
     vectors.append(
         negative(
             "vtable_reserved_bits",
@@ -565,7 +565,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
 
     # 4. entry_offset_oob: DIRECT4 entry pointing past block end
     heap = b"\x00" * 4
-    entry = VTableEntry.direct4(100)  # offset 100, way past block
+    entry = TableEntryRaw(TableEntryType.DIRECT4, 100)  # offset 100, way past block
     block = build_table_bytes([entry], heap)
     vectors.append(
         negative(
@@ -581,7 +581,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     # With 1 entry, heap_start = 6. LINK at offset 6 → 6 % 4 = 2 → error.
     link_data = b"\x00" * 32 + (1).to_bytes(4, "little")  # valid link: dummy digest, limit=1
     heap = link_data + b"\x00" * 2  # padding to fill block
-    block = build_table_bytes([VTableEntry.link(6)], heap)
+    block = build_table_bytes([TableEntryRaw(TableEntryType.LINK, 6)], heap)
     vectors.append(
         negative(
             "link_not_4_aligned",
@@ -597,7 +597,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     # So 2 bytes padding + 36 bytes link.
     link_data = b"\x00" * 32 + (0).to_bytes(4, "little")  # limit=0
     heap = b"\x00\x00" + link_data  # 2 pad + 36 link = 38
-    block = build_table_bytes([VTableEntry.link(8)], heap)
+    block = build_table_bytes([TableEntryRaw(TableEntryType.LINK, 8)], heap)
     vectors.append(
         negative(
             "link_limit_zero",
@@ -614,7 +614,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     sub_block = BlockType.TABLE.encode(4) + Tagged16(0, 0).encode()  # minimal TABLE
     heap = b"\x00" * 4 + b"\x42" + sub_block + b"\x00"  # 4 bytes + 1 byte padding + sub_block
     block = build_table_bytes(
-        [VTableEntry.direct4(8), VTableEntry.block(13)],
+        [TableEntryRaw(TableEntryType.DIRECT4, 8), TableEntryRaw(TableEntryType.BLOCK, 13)],
         heap,
     )
     vectors.append(
@@ -646,7 +646,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     # 1 entry, heap_start=6. Heap has a sub-block at offset 6 with size=100.
     fake_sub_header = BlockType.TABLE.encode(100)  # claims size=100
     heap = fake_sub_header + b"\x00" * 4  # small heap, but sub-block says 100
-    block = build_table_bytes([VTableEntry.block(6)], heap)
+    block = build_table_bytes([TableEntryRaw(TableEntryType.BLOCK, 6)], heap)
     vectors.append(
         negative(
             "subblock_exceeds_parent",
@@ -743,7 +743,8 @@ def gen_negative() -> list[dict[str, t.Any]]:
 
     # 13. wrong_block_type: DATA block where TABLE expected (root struct)
     # Root should be TABLE, but we provide a DATA block.
-    data_block = BlockType.DATA.encode(4) + b"\x00\x00"
+    # DATA block: block_header(2) + elem_info(2) = 4 bytes minimum
+    data_block = BlockType.DATA.encode(4) + Tagged16(0, 1).encode()  # elem_align=1, elem_size=1
     vectors.append(
         negative(
             "wrong_block_type",
@@ -757,7 +758,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     # 14. direct4_not_4_aligned: DIRECT4 at non-4-aligned offset
     # TABLE with 1 entry. heap_start = 6. 6 % 4 = 2 → error.
     heap = b"\x00" * 4
-    block = build_table_bytes([VTableEntry.direct4(6)], heap)
+    block = build_table_bytes([TableEntryRaw(TableEntryType.DIRECT4, 6)], heap)
     vectors.append(
         negative(
             "direct4_not_4_aligned",
@@ -772,7 +773,7 @@ def gen_negative() -> list[dict[str, t.Any]]:
     # TABLE with 2 entries. heap_start = 8. Put DIRECT8 at offset 12 (4-aligned but not 8).
     heap = b"\x00" * 16
     block = build_table_bytes(
-        [VTableEntry.null(), VTableEntry.direct8(12)],
+        [TableEntryRaw(TableEntryType.NULL, 0), TableEntryRaw(TableEntryType.DIRECT8, 12)],
         heap,
     )
     vectors.append(
@@ -799,10 +800,11 @@ def gen_negative() -> list[dict[str, t.Any]]:
     # 16. fixed_array_block_misaligned: u32[3] BLOCK at non-4-aligned offset
     # TABLE with 2 entries. heap_start = 8. First entry = DIRECT4 at 8 (4 bytes).
     # Second entry = BLOCK at offset 14 (not 4-aligned) containing a DATA block.
-    sub = BlockType.DATA.encode(16) + b"\x00\x00" + b"\x00" * 12  # 4-aligned data, 3 u32s
+    # DATA block: block_header(2) + elem_info(2) + 12 bytes data = 16
+    sub = BlockType.DATA.encode(16) + Tagged16(2, 4).encode() + b"\x00" * 12  # align=4, size=4, 3 u32s
     heap = b"\x00" * 4 + b"\x42\x42" + sub  # 4 bytes + 2 padding + sub_block
     block = build_table_bytes(
-        [VTableEntry.direct4(8), VTableEntry.block(14)],
+        [TableEntryRaw(TableEntryType.DIRECT4, 8), TableEntryRaw(TableEntryType.BLOCK, 14)],
         heap,
     )
     vectors.append(
@@ -823,6 +825,55 @@ def gen_negative() -> list[dict[str, t.Any]]:
             },
             block,
             "Fixed array BLOCK entry is not properly aligned",
+        )
+    )
+
+    # 17. directdata_params_nonzero: DIRECTDATA header with params != 0
+    # TABLE with 1 entry, heap_start=6. DIRECTDATA at offset 6.
+    # Header: params=1, number=2 → t16(1, 2) + 2 bytes data
+    dd_header = Tagged16(1, 2).encode()  # params=1 (reserved!)
+    dd_data = b"\xAB\xCD"
+    heap = dd_header + dd_data
+    block = build_table_bytes([TableEntryRaw(TableEntryType.DIRECTDATA, 6)], heap)
+    vectors.append(
+        negative(
+            "directdata_params_nonzero",
+            "DIRECTDATA header with non-zero params (reserved)",
+            {
+                "version": 1,
+                "root": "Root",
+                "structs": {
+                    "Root": {
+                        "fields": [{"index": 0, "name": "data", "type": "bytes"}],
+                    }
+                },
+            },
+            block,
+            "DIRECTDATA header params are not zero",
+        )
+    )
+
+    # 18. directdata_length_exceeds_block: DIRECTDATA length overflows block
+    # TABLE with 1 entry, heap_start=6. DIRECTDATA at offset 6.
+    # Header: params=0, number=100 but block only has 4 bytes of data after header
+    dd_header = Tagged16(0, 100).encode()  # claims 100 bytes
+    heap = dd_header + b"\x00" * 4  # only 4 bytes, not 100
+    block = build_table_bytes([TableEntryRaw(TableEntryType.DIRECTDATA, 6)], heap)
+    vectors.append(
+        negative(
+            "directdata_length_exceeds_block",
+            "DIRECTDATA at offset 6 claims length 100 but block is too small",
+            {
+                "version": 1,
+                "root": "Root",
+                "structs": {
+                    "Root": {
+                        "fields": [{"index": 0, "name": "data", "type": "bytes"}],
+                    }
+                },
+            },
+            block,
+            "DIRECTDATA data exceeds block size",
         )
     )
 

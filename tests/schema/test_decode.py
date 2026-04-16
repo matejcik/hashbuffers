@@ -7,9 +7,8 @@ from hashbuffers.codec import (
     Link,
     SlotsBlock,
     TableBlock,
-    VTableEntry,
-    VTableEntryType,
 )
+from hashbuffers.codec.table import TableEntryRaw, TableEntryType
 
 from .conftest import (
     ArrayStruct,
@@ -22,7 +21,7 @@ from .conftest import (
 class TestDecodeErrors:
     def test_wrong_block_type(self, store):
         """Feed a DATA block where a TABLE is expected."""
-        data_block = DataBlock.build(b"not a table").encode()
+        data_block = DataBlock.build(b"not a table", elem_size=1, elem_align=1).encode()
         with pytest.raises(ValueError, match="Expected .* block, got"):
             SimpleStruct.decode(data_block, store)
 
@@ -35,7 +34,7 @@ class TestDecodeErrors:
 
     def test_reserved_entry_type(self, store):
         """TABLE with a reserved entry type (0b010) should be rejected."""
-        valid = TableBlock.build([VTableEntry(VTableEntryType.NULL, 0)], b"")
+        valid = TableBlock.build([TableEntryRaw(TableEntryType.NULL, 0)], b"")
         encoded = bytearray(valid.encode())
         # Mutate entry at bytes 4-5 to reserved type 0b010
         entry_val = (0b010 << 13) | 0
@@ -48,8 +47,8 @@ class TestDecodeErrors:
         fake_link = Link(b"\xaa" * 32, 1)
         link_bytes = fake_link.encode()
         vtable = [
-            VTableEntry(VTableEntryType.LINK, 8),
-            VTableEntry(VTableEntryType.NULL, 0),
+            TableEntryRaw(TableEntryType.LINK, 8),
+            TableEntryRaw(TableEntryType.NULL, 0),
         ]
         table = TableBlock.build(vtable, link_bytes)
         encoded = table.encode()
@@ -60,7 +59,7 @@ class TestDecodeErrors:
     def test_corrupted_nested_block(self, store):
         """Nested BLOCK with garbage data should fail validation."""
         garbage = b"\xff" * 20
-        vtable = [VTableEntry(VTableEntryType.BLOCK, 6)]
+        vtable = [TableEntryRaw(TableEntryType.BLOCK, 6)]
         table = TableBlock.build(vtable, garbage)
         encoded = table._encode_without_validation()
         with pytest.raises((ValueError, IOError)):
@@ -69,17 +68,20 @@ class TestDecodeErrors:
     def test_slots_where_data_expected(self, store):
         """A SLOTS block where a DATA array is expected should fail."""
         slots = SlotsBlock.build_slots([b"wrong"]).encode()
-        vtable = [VTableEntry(VTableEntryType.BLOCK, 6)]
+        vtable = [TableEntryRaw(TableEntryType.BLOCK, 6)]
         table = TableBlock.build(vtable, slots)
         encoded = table.encode()
         with pytest.raises(ValueError, match="Expected DATA leaf"):
-            ArrayStruct.decode(encoded, store)
+            decoded = ArrayStruct.decode(encoded, store)
+            # Force evaluation of the lazy array field
+            assert decoded.values is not None
+            list(decoded.values)
 
     def test_required_field_null_in_table(self, store):
         """Required field explicitly NULL should raise."""
         vtable = [
-            VTableEntry(VTableEntryType.NULL, 0),  # name (required)
-            VTableEntry(VTableEntryType.INLINE, 42),  # value
+            TableEntryRaw(TableEntryType.NULL, 0),  # name (required)
+            TableEntryRaw(TableEntryType.INLINE, 42),  # value
         ]
         table = TableBlock.build(vtable, b"")
         encoded = table.encode()
@@ -99,11 +101,11 @@ class TestDecodeForwardCompat:
     def test_extra_fields_ignored(self, store):
         """TABLE with more entries than schema expects should still decode."""
         vtable = [
-            VTableEntry(VTableEntryType.INLINE, 42),  # x
-            VTableEntry(VTableEntryType.INLINE, 7),  # y
-            VTableEntry(VTableEntryType.NULL, 0),
-            VTableEntry(VTableEntryType.NULL, 0),
-            VTableEntry(VTableEntryType.NULL, 0),
+            TableEntryRaw(TableEntryType.INLINE, 42),  # x
+            TableEntryRaw(TableEntryType.INLINE, 7),  # y
+            TableEntryRaw(TableEntryType.NULL, 0),
+            TableEntryRaw(TableEntryType.NULL, 0),
+            TableEntryRaw(TableEntryType.NULL, 0),
         ]
         table = TableBlock.build(vtable, b"")
         decoded = SimpleStruct.decode(table.encode(), store)
@@ -112,7 +114,7 @@ class TestDecodeForwardCompat:
 
     def test_shorter_table_than_schema(self, store):
         """TABLE shorter than schema: missing fields become None."""
-        vtable = [VTableEntry(VTableEntryType.INLINE, 42)]
+        vtable = [TableEntryRaw(TableEntryType.INLINE, 42)]
         table = TableBlock.build(vtable, b"")
         decoded = SimpleStruct.decode(table.encode(), store)
         assert decoded.x == 42

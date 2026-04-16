@@ -1,6 +1,7 @@
 """Tests for lazy LINK resolution on descriptor-backed fields."""
 
-from hashbuffers.codec import Link, TableBlock, VTableEntry, VTableEntryType
+from hashbuffers.codec import Link, TableBlock
+from hashbuffers.codec.table import TableEntryRaw, TableEntryType
 
 from .conftest import Inner, Outer
 
@@ -11,8 +12,8 @@ def _make_outer_with_inner_link(store) -> bytes:
     digest = store.store(inner_table)
     link = Link(digest, 1)
     vtable = [
-        VTableEntry(VTableEntryType.NULL, 0),
-        VTableEntry(VTableEntryType.LINK, 8),
+        TableEntryRaw(TableEntryType.NULL, 0),
+        TableEntryRaw(TableEntryType.LINK, 8),
     ]
     table = TableBlock.build(vtable, link.encode())
     return table.encode()

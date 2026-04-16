@@ -3,6 +3,7 @@
 import pytest
 
 from hashbuffers.codec import TableBlock
+from hashbuffers.codec.table import NullEntry, TableEntryRaw, TableEntryType
 from hashbuffers.data_model.primitive import U8, U16, U32
 from hashbuffers.data_model.struct import LazyStructMapping, StructField, StructType
 from hashbuffers.fitting import BlockEntry
@@ -91,8 +92,9 @@ class TestStructTypeDecode:
         entry = outer.encode({}, store)
         data = entry.encode()
         table = TableBlock.decode(data)
-        result = st.decode(table, 0, store)
-        assert result is None
+        # The outer table has no entries (empty struct), so __getitem__
+        # returns NULL_ENTRY for the missing index (forward compat)
+        assert isinstance(table[0], NullEntry)
 
     def test_decode_embedded_struct(self, store):
         """StructType.decode should decode a struct embedded as a BLOCK entry."""
@@ -101,13 +103,13 @@ class TestStructTypeDecode:
         entry = outer_st.encode({"inner": {"x": 42}}, store)
         data = entry.encode()
         table = TableBlock.decode(data)
-        result = inner_st.decode(table, 0, store)
+        result = inner_st.decode(table[0], store)
         assert result is not None
         assert result["x"] == 42
 
     def test_decode_linked_struct(self, store):
         """StructType.decode should handle LINK entries (limit=1)."""
-        from hashbuffers.codec import Link, VTableEntry
+        from hashbuffers.codec import Link
 
         inner_st = make_struct_type(StructField(0, "x", U32))
         # Build a valid inner table and store it as a LINK with limit=1
@@ -116,14 +118,16 @@ class TestStructTypeDecode:
         digest = store.store(inner_entry.block)
         link_bytes = Link(digest, 1).encode()
         heap_start = TableBlock.heap_start(1)
-        parent = TableBlock.build([VTableEntry.link(heap_start)], link_bytes)
-        result = inner_st.decode(parent, 0, store)
+        parent = TableBlock.build(
+            [TableEntryRaw(TableEntryType.LINK, heap_start)], link_bytes
+        )
+        result = inner_st.decode(parent[0], store)
         assert result is not None
         assert result["x"] == 99
 
     def test_decode_link_bad_limit(self, store):
         """LINK entry with limit != 1 should be rejected."""
-        from hashbuffers.codec import Link, VTableEntry
+        from hashbuffers.codec import Link
 
         st = make_struct_type(StructField(0, "x", U32))
         # Build a valid inner table to store
@@ -133,16 +137,18 @@ class TestStructTypeDecode:
         # Build a parent TABLE with a LINK entry having limit=5 (not 1)
         link_bytes = Link(digest, 5).encode()
         heap_start = TableBlock.heap_start(1)
-        table = TableBlock.build([VTableEntry.link(heap_start)], link_bytes)
+        table = TableBlock.build(
+            [TableEntryRaw(TableEntryType.LINK, heap_start)], link_bytes
+        )
         with pytest.raises(ValueError, match="Expected LINK with limit 1"):
-            st.decode(table, 0, store)
+            st.decode(table[0], store)
 
     def test_block_decoder_rejects_non_table(self, store):
         from hashbuffers.codec import DataBlock
 
         st = make_struct_type(StructField(0, "x", U32))
         decoder = st.block_decoder(store)
-        data_block = DataBlock.build(b"hello")
+        data_block = DataBlock.build(b"hello", elem_size=1, elem_align=1)
         with pytest.raises(ValueError, match="Expected TABLE"):
             decoder(data_block)
 

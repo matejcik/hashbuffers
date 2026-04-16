@@ -4,10 +4,11 @@ import typing as t
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
-from ..codec import Block, Link, TableBlock
-from ..fitting import NULL_ENTRY, Table, TableEntry
+from ..codec import Block, TableBlock, TableEntry
+from ..codec.table import NULL_ENTRY, TableEntry
+from ..fitting import Table
 from ..store import BlockStore
-from .abc import BlockDecoderType, FieldType
+from .common import BlockDecoderType, FieldType, resolve_entry_to_block
 
 T = t.TypeVar("T")
 _UNSET = object()
@@ -41,7 +42,8 @@ class LazyStructMapping(Mapping[str, t.Any]):
         if cached is not _UNSET:
             return cached
 
-        value = field.type.decode(self._table, field.index, self._store)
+        entry = self._table[field.index]
+        value = field.type.decode_or_none(entry, self._store)
         if value is None and field.required:
             raise ValueError(f"Required field '{field.name}' is missing")
         self._values[field.name] = value
@@ -91,18 +93,8 @@ class StructType(BlockDecoderType[Mapping[str, t.Any]]):
         table = Table(entries_list)
         return table.build_entry(store)
 
-    def decode(
-        self, table: TableBlock, index: int, store: BlockStore
-    ) -> Mapping[str, t.Any] | None:
-        block = table.get_block(index)
-        if block is None:
-            return None
-
-        if isinstance(block, Link):
-            if block.limit != 1:
-                raise ValueError(f"Expected LINK with limit 1, got {block.limit}")
-            block = store.fetch(block.digest)
-
+    def decode(self, entry: TableEntry, store: BlockStore) -> Mapping[str, t.Any]:
+        block = resolve_entry_to_block(entry, store, expected_limit=1)
         decode_block = self.block_decoder(store)
         return decode_block(block)
 

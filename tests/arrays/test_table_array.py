@@ -1,4 +1,4 @@
-"""Unit tests for TableArray — leaf_length, leaf_to_list, entry_to_element."""
+"""Unit tests for TableArray — leaf_to_list, entry_to_element."""
 
 import pytest
 
@@ -19,8 +19,8 @@ def make_table_array(store, count):
     for _ in range(count):
         t = Table([])
         entries.append(t.build_entry(store))
-    entry = build_table_array(entries, store)
-    return TableArray(entry.block, store)
+    block = build_table_array(entries, store)
+    return TableArray(block, store)
 
 
 class TestTableArrayBasic:
@@ -39,15 +39,9 @@ class TestTableArrayBasic:
 
 
 class TestTableArrayTypeChecks:
-    def test_leaf_length_rejects_non_table(self):
-        arr = TableArray.__new__(TableArray)
-        block = DataBlock.build(b"data")
-        with pytest.raises(ValueError, match="TableBlock"):
-            arr.leaf_length(block)
-
     def test_leaf_to_list_rejects_non_table(self):
         arr = TableArray.__new__(TableArray)
-        block = DataBlock.build(b"data")
+        block = DataBlock.build(b"data", elem_size=1, elem_align=1)
         with pytest.raises(ValueError, match="TableBlock"):
             arr.leaf_to_list(block)
 

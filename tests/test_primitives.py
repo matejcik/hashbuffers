@@ -2,14 +2,8 @@
 
 import pytest
 
-from hashbuffers.codec import (
-    SIZE_MAX,
-    BlockType,
-    Link,
-    Tagged16,
-    VTableEntry,
-    VTableEntryType,
-)
+from hashbuffers.codec import SIZE_MAX, BlockType, Link, Tagged16
+from hashbuffers.codec.table import TableEntryRaw, TableEntryType
 
 
 def test_t16_tags():
@@ -39,8 +33,8 @@ def test_block_header_reserved_bit_disallowed():
 
 
 def test_vtable_entry():
-    entry = VTableEntry(VTableEntryType.INLINE, 400)
-    assert entry == VTableEntry.decode(entry.encode())
+    entry = TableEntryRaw(TableEntryType.INLINE, 400)
+    assert entry == TableEntryRaw.decode(entry.encode())
 
 
 def test_link():

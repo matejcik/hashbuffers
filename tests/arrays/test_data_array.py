@@ -14,9 +14,9 @@ def store():
 
 def make_data_array(store, values):
     byte_values = [v.to_bytes(4, "little") for v in values]
-    entry = build_data_array(byte_values, 4, store)
+    block = build_data_array(byte_values, 4, 4, store)
     return DataArray(
-        entry.block,
+        block,
         store,
         elem_size=4,
         elem_align=4,
@@ -71,14 +71,6 @@ class TestDataArrayEq:
 
 
 class TestDataArrayTypeChecks:
-    def test_leaf_length_rejects_non_data(self):
-        arr = DataArray.__new__(DataArray)
-        arr.elem_size = 4
-        arr.elem_align = 4
-        block = SlotsBlock.build_slots([b"a"])
-        with pytest.raises(ValueError, match="DATA leaf"):
-            arr.leaf_length(block)
-
     def test_leaf_to_list_rejects_non_data(self):
         arr = DataArray.__new__(DataArray)
         arr.elem_size = 4

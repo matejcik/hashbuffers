@@ -5,9 +5,10 @@ from __future__ import annotations
 import typing as t
 from enum import IntEnum
 
-from .codec import Block, Link, TableBlock
-from .data_model.abc import BlockDecoderType, FieldType
-from .fitting import NULL_ENTRY, BlockEntry, Table, TableEntry
+from .codec import Block, TableBlock
+from .codec.table import NULL_ENTRY, BlockEntry, TableEntry
+from .data_model.common import BlockDecoderType, FieldType, resolve_entry_to_block
+from .fitting import Table
 from .schema import (
     I32,
     I64,
@@ -28,17 +29,6 @@ if t.TYPE_CHECKING:
 MT = t.TypeVar("MT", bound="protobuf.MessageType")
 
 
-def _resolve_block_or_link(
-    table: TableBlock, index: int, store: BlockStore
-) -> Block | None:
-    result = table.get_block(index)
-    if result is None:
-        return None
-    if isinstance(result, Link):
-        return store.fetch(result.digest)
-    return result
-
-
 class _MessageRef(BlockDecoderType[MT]):
     def __init__(self, msg_type: type[MT]) -> None:
         self.msg_type = msg_type
@@ -46,10 +36,8 @@ class _MessageRef(BlockDecoderType[MT]):
     def encode(self, value: MT, store: BlockStore) -> TableEntry:
         return _serialize_entry(value, store)
 
-    def decode(self, table: TableBlock, index: int, store: BlockStore) -> MT | None:
-        block = _resolve_block_or_link(table, index, store)
-        if block is None:
-            return None
+    def decode(self, entry: TableEntry, store: BlockStore) -> MT:
+        block = resolve_entry_to_block(entry, store)
         return self.block_decoder(store)(block)
 
     def block_decoder(self, store: BlockStore) -> t.Callable[[Block], MT]:
@@ -98,7 +86,7 @@ def _serialize_entry(msg: "protobuf.MessageType", store: BlockStore) -> BlockEnt
     mtype = msg.__class__
     if not mtype.FIELDS:
         table = TableBlock.build([], b"")
-        return BlockEntry.from_table(table, 2)
+        return BlockEntry(table)
 
     entries: dict[int, TableEntry] = {}
 
@@ -131,7 +119,7 @@ def _deserialize_from_table(
     kwargs: dict[str, t.Any] = {}
 
     for ftag, field in msg_type.FIELDS.items():
-        value = _hb_type_for_field(field).decode(table, ftag - 1, store)
+        value = _hb_type_for_field(field).decode_or_none(table[ftag - 1], store)
 
         if value is None:
             if field.repeated:

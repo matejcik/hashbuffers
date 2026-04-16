@@ -2,9 +2,15 @@
 
 import pytest
 
-from hashbuffers.codec import TableBlock, VTableEntry
+from hashbuffers.codec import TableBlock
+from hashbuffers.codec.table import (
+    DirectFixedEntry,
+    InlineIntEntry,
+    NullEntry,
+    TableEntryRaw,
+    TableEntryType,
+)
 from hashbuffers.data_model.primitive import F32, F64, I32, U8, U32
-from hashbuffers.fitting import DirectEntry, InlineIntEntry
 from hashbuffers.store import BlockStore
 
 
@@ -37,11 +43,11 @@ class TestPrimitiveInt:
 
     def test_encode_direct(self, store):
         entry = U32.encode(0xDEADBEEF, store)
-        assert isinstance(entry, DirectEntry)
+        assert isinstance(entry, DirectFixedEntry)
 
     def test_decode_null(self, store):
-        table = TableBlock.build([VTableEntry.null()], b"")
-        assert U32.decode(table, 0, store) is None
+        table = TableBlock.build([TableEntryRaw(TableEntryType.NULL, 0)], b"")
+        assert isinstance(table[0], NullEntry)
 
 
 class TestPrimitiveFloat:
@@ -68,18 +74,18 @@ class TestPrimitiveFloat:
 
     def test_encode_direct(self, store):
         entry = F32.encode(1.0, store)
-        assert isinstance(entry, DirectEntry)
+        assert isinstance(entry, DirectFixedEntry)
 
     def test_decode_null(self, store):
-        table = TableBlock.build([VTableEntry.null()], b"")
-        assert F32.decode(table, 0, store) is None
+        table = TableBlock.build([TableEntryRaw(TableEntryType.NULL, 0)], b"")
+        assert isinstance(table[0], NullEntry)
 
     def test_decode_roundtrip(self, store):
         entry = F32.encode(2.5, store)
-        assert isinstance(entry, DirectEntry)
+        assert isinstance(entry, DirectFixedEntry)
         # Build a table containing this entry
         from hashbuffers.fitting import Table
 
         t = Table([entry])
         block = t.build(store)
-        assert F32.decode(block, 0, store) == pytest.approx(2.5)
+        assert F32.decode(block[0], store) == pytest.approx(2.5)
