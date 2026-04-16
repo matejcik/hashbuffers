@@ -21,16 +21,16 @@ Hashbuffers is a content-addressed wire format that splits data into ≤8 KiB bl
 ## Source Files
 
 ### `src/hashbuffers/codec.py`
-Core binary format. Block types as an enum (`TABLE=0, DATA=1, SLOTS=2, LINKS=3`). Each block has `encode()`, `decode()`, `validate()`. Key constants: `SIZE_MAX = 0x1FFF` (8191).
+Core binary format. Block types as an enum (`TABLE=0, DATA=1, SLOTS=2, LINKS=3`). Each block has `encode()`, `decode()`, `validate()`, `alignment()`. Key constants: `SIZE_MAX = 0x1FFF` (8191).
 
-- `TableBlock` — vtable (list of `VTableEntry`) + heap bytes. VTable entry types: `NULL`, `INLINE`, `DIRECT4`, `DIRECT8`, `BLOCK`, `LINK`
-- `DataBlock` — flat byte payload, used for primitive arrays and bytestrings
+- `TableBlock` — vtable (list of `VTableEntry`) + heap bytes. VTable entry types: `NULL`, `DIRECTDATA`, `INLINE`, `DIRECT4`, `DIRECT8`, `BLOCK`, `LINK`
+- `DataBlock` — self-describing flat array: has `elem_size` and `elem_align` fields in an `elem_info` t16 header. Used for primitive arrays and bytestrings
 - `SlotsBlock` — variable-length entries (offsets array + heap), used for bytestring arrays
 - `LinksBlock` — array of `Link` (digest + cumulative limit), used for link trees
 - `Link` — 36 bytes: 32-byte digest + u32 limit
 
 ### `src/hashbuffers/fitting.py`
-Table packing algorithm. `Table.fit()` tries `alignment_pack()`, outlinking largest blocks if they don't fit. Entry types: `InlineIntEntry` (≤13-bit values), `DirectEntry` (4 or 8 bytes on heap), `BlockEntry` (embedded sub-block), `LinkEntry` (36-byte link), `NullEntry`.
+Table packing algorithm. `Table.fit()` tries `alignment_pack()`, outlinking largest blocks if they don't fit. Entry types: `InlineIntEntry` (≤13-bit values), `DirectEntry` (4 or 8 bytes on heap), `DirectDataEntry` (alignment-1 data with t16 header), `BlockEntry` (embedded sub-block), `LinkEntry` (36-byte link), `NullEntry`.
 
 ### `src/hashbuffers/arrays.py`
 **Read side**: `LinkTree` navigates LINKS blocks via binary search. `DataArray`, `BytestringArray`, `TableArray` extend `TreeArray` (implements `Sequence[T]`). `BytestringTree` handles single large bytestrings split across blocks.
@@ -129,11 +129,12 @@ Vector names: `inline_int`, `all_primitives`, `signed_negative`, `bool_field`, `
 ### Negative vectors (`negative.json`)
 Each vector has same shape plus `error` description. Test: `test_decode_fails` (decode must raise).
 
-Vector names: `reserved_header_bit`, `table_too_small`, `vtable_reserved_bits`, `entry_offset_oob`, `link_not_4_aligned`, `link_limit_zero`, `block_not_2_aligned`, `subblock_exceeds_parent`, `slots_bad_sentinel`, `slots_decreasing_offsets`, `links_reserved_nonzero`, `links_not_increasing`, `wrong_block_type`, `direct4_not_4_aligned`, `direct8_not_8_aligned`, `fixed_array_block_misaligned`
+Vector names: `reserved_header_bit`, `table_too_small`, `vtable_reserved_bits`, `entry_offset_oob`, `link_not_4_aligned`, `link_limit_zero`, `block_not_2_aligned`, `subblock_exceeds_parent`, `slots_bad_sentinel`, `slots_decreasing_offsets`, `links_reserved_nonzero`, `links_not_increasing`, `wrong_block_type`, `direct4_not_4_aligned`, `direct8_not_8_aligned`, `fixed_array_block_misaligned`, `directdata_params_nonzero`, `directdata_length_exceeds_block`
 
 ## Key Concepts Quick Reference
 
 - **Inline**: value ≤ 13 bits stored directly in vtable entry (no heap space)
+- **DirectData**: alignment-1 data on heap with t16 length header (2 bytes overhead vs 4 for BLOCK+DATA)
 - **Direct4/Direct8**: 4 or 8 byte value on heap, alignment-constrained
 - **Block entry**: sub-block embedded on heap (any block type)
 - **Link entry**: 36-byte hash reference to an external block

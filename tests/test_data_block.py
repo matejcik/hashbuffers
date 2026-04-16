@@ -108,3 +108,47 @@ def test_alignment_method():
     assert DataBlock.build(b"", elem_size=2, elem_align=2).alignment() == 2
     assert DataBlock.build(b"", elem_size=4, elem_align=4).alignment() == 4
     assert DataBlock.build(b"", elem_size=8, elem_align=8).alignment() == 8
+
+
+def test_build_rejects_zero_elem_size():
+    """build() rejects elem_size <= 0."""
+    with pytest.raises(ValueError, match="positive"):
+        DataBlock.build(b"x", elem_size=0, elem_align=1)
+
+
+def test_build_array_rejects_mismatched_lengths():
+    """build_array() rejects elements with different lengths."""
+    with pytest.raises(ValueError, match="same length"):
+        DataBlock.build_array([b"ab", b"abc"], align=1)
+
+
+def test_build_array_rejects_zero_size_elements():
+    """build_array() rejects zero-length elements."""
+    with pytest.raises(ValueError, match="positive"):
+        DataBlock.build_array([b"", b""], align=1)
+
+
+def test_validate_rejects_bad_alignment():
+    """validate() rejects non-power-of-two alignment."""
+    block = DataBlock(DataBlock.BLOCK_TYPE, 0, b"\x00\x00\x00", 3, 3)
+    block.size = block.compute_size()
+    with pytest.raises(ValueError, match="power of two"):
+        block.validate()
+
+
+def test_validate_rejects_bad_data_length():
+    """validate() rejects data not divisible by padded element size."""
+    # 5 bytes of data with elem_size=4, elem_align=4: 5 % 4 != 0
+    block = DataBlock(DataBlock.BLOCK_TYPE, 0, b"\x00" * 5, 4, 4)
+    block.size = block.compute_size()
+    with pytest.raises(ValueError, match="not a multiple"):
+        block.validate()
+
+
+def test_getitem_slice():
+    """__getitem__ with slice returns a list of elements."""
+    elems = [b"aa", b"bb", b"cc", b"dd"]
+    block = DataBlock.build_array(elems, align=2)
+    assert block[1:3] == [b"bb", b"cc"]
+    assert block[:2] == [b"aa", b"bb"]
+    assert block[2:] == [b"cc", b"dd"]

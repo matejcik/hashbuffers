@@ -121,3 +121,37 @@ def test_decode_rejects_trailing_data():
     encoded = block.encode()
     with pytest.raises(IOError, match="Unparsed trailing data"):
         SlotsBlock.decode(encoded + b"extra")
+
+
+def test_len():
+    """__len__ returns element count."""
+    block = SlotsBlock.build_slots([b"a", b"bb", b"ccc"])
+    assert len(block) == 3
+
+
+def test_getitem_int():
+    """__getitem__ with int returns the slot entry."""
+    block = SlotsBlock.build_slots([b"foo", b"bar", b"baz"])
+    assert block[0] == b"foo"
+    assert block[1] == b"bar"
+    assert block[2] == b"baz"
+
+
+def test_getitem_slice():
+    """__getitem__ with slice returns a list of slot entries."""
+    block = SlotsBlock.build_slots([b"a", b"bb", b"ccc", b"dddd"])
+    assert block[1:3] == [b"bb", b"ccc"]
+    assert block[:2] == [b"a", b"bb"]
+
+
+def test_get_entries():
+    """get_entries() returns all slot entries."""
+    items = [b"alpha", b"beta", b"gamma"]
+    block = SlotsBlock.build_slots(items)
+    assert block.get_entries() == items
+
+
+def test_alignment():
+    """alignment() returns 2."""
+    block = SlotsBlock.build_slots([b"x"])
+    assert block.alignment() == 2

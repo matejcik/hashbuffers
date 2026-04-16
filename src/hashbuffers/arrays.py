@@ -217,9 +217,17 @@ class TreeArray(ABC, t.Sequence[T], t.Generic[T, ElemType, EntryType]):
             entries.extend(self.leaf_to_list(leaf))
         return [self.decode_entry(elem) for elem in entries[slice_start:slice_stop]]
 
+    def __iter__(self) -> t.Iterator[T]:
+        _start, leaves = self.tree.collect_leaves()
+        for leaf in leaves:
+            for entry in self.leaf_to_list(leaf):
+                yield self.decode_entry(entry)
+
     def __eq__(self, other: t.Any) -> bool:
         if not isinstance(other, t.Sequence):
             return NotImplemented
+        if len(self) != len(other):
+            return False
         return all(a == b for a, b in zip(self, other))
 
 

@@ -174,3 +174,32 @@ class TestFitTable:
         table = Table([field])
         table.fit(store)
         assert table.alignment == 8
+
+    def test_build_entry(self, store):
+        """build_entry() returns a BlockEntry wrapping the built table."""
+        table = Table([InlineIntEntry.from_int(1, False)])
+        entry = table.build_entry(store)
+        assert isinstance(entry, BlockEntry)
+
+    def test_outlink_directdata(self, store):
+        """outlink() converts DirectDataEntry to LinkEntry."""
+        from hashbuffers.fitting import outlink
+
+        entry = DirectDataEntry(b"some data")
+        result = outlink(entry, store)
+        assert isinstance(result, LinkEntry)
+
+    def test_outlink_block(self, store):
+        """outlink() converts BlockEntry to LinkEntry."""
+        from hashbuffers.fitting import outlink
+
+        inner = DataBlock.build(b"payload", elem_size=1, elem_align=1)
+        result = outlink(BlockEntry(inner), store)
+        assert isinstance(result, LinkEntry)
+
+    def test_outlink_unsupported_raises(self, store):
+        """outlink() rejects entry types that can't be outlinked."""
+        from hashbuffers.fitting import outlink
+
+        with pytest.raises(ValueError, match="Cannot outlink"):
+            outlink(InlineIntEntry.from_int(1, False), store)
