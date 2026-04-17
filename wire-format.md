@@ -404,13 +404,17 @@ The alignment of a `SLOTS` block is minimum block alignment, which is 2.
 
 An array of links / an inner node of a link tree.
 
-`[t16 block_header] [u16 reserved] [link 0, 1, 2 ...]`
+`[t16 block_header] [u16 depth_field] [link 0, 1, 2 ...]`
 
-The block header is followed by a two-byte reserved field which aligns the rest
-of the block to 4. After it follows a non-delimited array of 36-byte links (see
+The block header is followed by a two-byte field which aligns the rest of the
+block to 4. After it follows a non-delimited array of 36-byte links (see
 [Link](#link).)
 
-The `reserved` field is all zero, other values are reserved for future use.
+The `depth_field` has the following structure:
+
+- `depth` 3 bits: the depth of the sub-tree rooted at this `LINKS` block. See
+  [Depth limit](#depth-limit).
+- `reserved` 13 bits: all zero. Other values are reserved for future use.
 
 In a `LINKS` block, the meaning of the link’s `limit` field is a cumulative
 count of content up to and including the current link. This is to facilitate
@@ -422,19 +426,24 @@ Example: For an inner block of 321 items divided into max 100-item sub-blocks,
 this would be the structure:
 
 - `[t16 block_header]`
-- `[u16 reserved]`
+- `[u16 depth_field]` (depth = 0, all children are leaves)
 - `[hash 0] [100]` — items 0 to 99
 - `[hash 1] [200]` — items 100 to 199
 - `[hash 2] [300]` — items 200 to 299
 - `[hash 3] [321]` — items 300 to 320
 
+A `LINKS` block MUST contain at least 2 links. A 0-link block is meaningless (no
+content length can be stated), and a 1-link block is a no-op indirection. The
+minimum valid size of a `LINKS` block is therefore 76 bytes (`4 + 2 * 36`).
+
 Upon receiving a `LINKS` block, the reader MUST check the following invariants:
 
-1. block size is at least 4
-2. value of `reserved` is zero
-3. `size - 4` is a multiple of link size (36 bytes)
-4. `limit` values are strictly increasing
-5. no `limit` is zero
+1. block size is at least 76
+2. `depth` is at most 4
+3. `reserved` bits of `depth_field` are zero
+4. `size - 4` is a multiple of link size (36 bytes)
+5. `limit` values are strictly increasing
+6. no `limit` is zero
 
 Blocks that fail any of these invariants MUST be rejected.
 
@@ -454,16 +463,51 @@ Each `LINKS` block is at most block-sized array of links. Each link points to:
 1. inner node: a `LINKS` block that is the root of a sub-tree
 2. leaf node: a block that carries individual elements of the array.
 
-Writers SHOULD balance the tree, but the format permits unbalanced trees. In
-particular, inner nodes and leaf nodes are allowed to be intermixed at the same
-level.
-
 Each leaf of a link tree is a block of type `DATA`, `SLOTS`, or `TABLE`. Mixed
 trees are permitted. (Constrained readers only see one leaf of a tree at a time,
 so rejecting inconsistent trees would be needlessly complicated.)
 
 Link trees MUST NOT use `LINKS` blocks as leaf nodes. Implementations are free
 to assume that any `LINKS` block is an inner node.
+
+### Depth limit
+
+The `depth` field of a `LINKS` block serves as a countdown that bounds
+traversal depth. Its value indicates the maximum remaining nesting: a reader
+that enters a `LINKS` block with depth N knows it will reach a leaf within at
+most N+1 descents.
+
+- **depth 0**: all children of this `LINKS` block are leaf nodes.
+- **depth N** (N > 0): children may be leaf nodes or `LINKS` blocks. All
+  `LINKS` children MUST have depth strictly less than N.
+
+The maximum allowed depth is **4**, giving 5 levels of `LINKS` blocks. This is
+sufficient to represent the maximum array size of 2^32 elements: a single
+`LINKS` block holds at most 227 links (`(8191 - 4) / 36`), and 227^5 > 2^32.
+
+Upon descending into a child `LINKS` block, the reader MUST verify that the
+child’s `depth` is strictly less than the parent’s `depth`.
+
+### Tree construction
+
+The following greedy-packing algorithm is recommended for writers:
+
+1. Collect all leaf nodes into a list.
+2. Split the list into exactly block-sized chunks of links (227 per block), and
+   a (possibly empty) tail of length less than block size.
+3. Encode all chunks as `LINKS` blocks, and collect those blocks into a list.
+4. Append the tail to the new list.
+5. Recursively apply this algorithm to the new list, until the result is just
+   one block.
+
+This algorithm is guaranteed to produce a tree with minimal depth.
+
+_Note on constrained writers:_ A constrained writer producing elements one by
+one can also produce a greedy-packed tree, given an external block repository
+with read and write capability. In this scenario, the writer just needs to keep
+in memory a single leaf block, plus at most 5 links to inner nodes at each
+depth. Whenever a leaf block is full, it would be sent to the repository, then
+the writer can recursively fetch and replace the parent nodes.
 
 ### Traversal
 
@@ -479,7 +523,7 @@ content length matches what the parent states.
 
 The following algorithm can be used for tree traversal:
 
-1. Set `index` to queried element index.
+1. Set `index` to queried element index. Set `max_depth` to root’s `depth`.
 2. Find the link `i` whose limit is the smallest such that `limit[i] > index`.
 3. Set `position` to `limit[i-1]`, or `0` if `i` is 0. This is the starting
    global index of link `i`'s content.
@@ -488,8 +532,11 @@ The following algorithm can be used for tree traversal:
 6. Descend into child `i`.
 7. Calculate `actual_content_length` of the current node, verify that
    `stated_content_length == actual_content_length`.
-8. If the node is a leaf (i.e., not a `LINKS` block), return the element at `index`.
-9. Else, repeat from step 2.
+8. If the node is a leaf (i.e., not a `LINKS` block), return the element at
+   `index` and terminate
+9. Check that the child’s `depth` is strictly less than `max_depth`. Set
+   `max_depth` to the child’s `depth`.
+10. Repeat from step 2.
 
 Content length of a `LINKS` inner node is the maximum `limit` of its links.
 Content length of a leaf block is its element count, per the block type
@@ -883,18 +930,20 @@ packing subsequent elements into the same `TABLE` block.
 
 ## Note on deep nesting
 
-The format intentionally does not specify a maximum nesting depth.
-Implementations need to take care not to blindly recurse into the structure,
-which may cause stack overflows.
+Link trees have a maximum depth of 4 (see [Depth limit](#depth-limit)), which
+bounds the recursion required for tree traversal. Readers can rely on this limit
+to use bounded iteration or bounded recursion without risk of stack overflow.
+
+Schema nesting (structs containing structs) does not have a format-imposed
+depth limit. Implementations need to take care not to blindly recurse into
+deeply nested schemas. It is up to the reader to not implement schemas that are
+inherently too deep for said reader to safely traverse.
 
 We note that it is possible to traverse an arbitrarily deep structure safely, by
 following the links and evicting blocks from memory as they are read. The reader
 can always retain just the root block of the entire structure, plus an index
 into a particular deep link tree, which gives it an ability to always reach the
 same place by re-starting from the root.
-
-It is up to the reader to not implement schemas that are inherently too deep for
-said reader to safely traverse.
 
 ## Hashing
 
@@ -958,6 +1007,12 @@ The following variations seem to make sense:
 
 * Big-endian byte order (`hashbuffers-*-be`), if required by the platforms in
   question.
+
+Variants that change the block size or link structure will have a different
+branching factor, and the maximum link tree depth may need to be adjusted
+accordingly. For `hashbuffers-13/64`, a 3-bit depth field cannot cover the full
+2^64 range, but depth 7 still allows approximately 3 × 10^18 elements (multiple
+exabytes of single-byte data), which should suffice in practice.
 
 Note that the format intentionally does not explicitly carry any of those
 parameters. The proposed variants are different instances of the format and
