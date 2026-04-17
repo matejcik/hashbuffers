@@ -81,7 +81,7 @@ integrity; the limit tells it how many elements the child contains.
 ## Block types
 
 Every block starts with a 2-byte `t16` header encoding its type and size.
-There are four types. <<Types of blocks>>
+There are four types. <<Block types>>
 
 ### TABLE — heterogeneous container
 
@@ -92,8 +92,10 @@ of variable-size data.
 Each entry is a `t16` with a type tag and an offset:
 
 - **NULL** — empty / missing field
+- **DIRECTDATA** — offset points to a small bytestring on the heap (a `t16`
+  header + raw bytes); saves 2 bytes vs. a full DATA sub-block
+- **DIRECT4 / DIRECT8** — offset points to a raw 4- or 8-byte value on the heap
 - **INLINE** — a small integer (≤13 bits) stored right in the entry itself
-- **DIRECT** — offset points to a raw value on the heap
 - **BLOCK** — offset points to a nested sub-block (with its own header)
 - **LINK** — offset points to a 36-byte link referencing an external block
 
@@ -103,8 +105,9 @@ complex elements are TABLEs. <<TABLE>>
 ### DATA — flat array of fixed-size elements
 
 A DATA block is a contiguous array of same-sized values (integers, floats,
-etc.) packed after the header, with alignment padding as needed. The element
-count is derived from block size and the known element size.
+etc.). After the block header comes a `t16` **elem_info** field encoding the
+element alignment and size, followed by the element data with alignment padding
+as needed. The element count is derived from the block size and elem_info.
 
 Use case: an array of `u32`, a byte string, a list of `f64`. <<DATA>>
 
@@ -118,9 +121,16 @@ Use case: a list of short strings or small byte blobs. <<SLOTS>>
 
 ### LINKS — inner node of a link tree
 
-A LINKS block is an array of 36-byte links. Each link's `limit` is
-cumulative: it tells you how many elements exist up to and including that
-child. This enables binary search to find which child holds a given index.
+A LINKS block is an array of 36-byte links, preceded by a `depth_field`.
+The depth field is a countdown that bounds traversal depth: depth 0 means
+all children are leaves; depth N means children may be leaves or LINKS
+blocks with depth < N. The maximum allowed depth is **4**, giving at most
+5 levels of LINKS nesting — enough for 2^32 elements. A LINKS block must
+contain at least 2 links.
+
+Each link's `limit` is cumulative: it tells you how many elements exist up
+to and including that child. This enables binary search to find which child
+holds a given index.
 
 Use case: when an array is too large for one block, a LINKS block stitches
 multiple leaf blocks into a tree. <<LINKS>>
@@ -142,8 +152,10 @@ don't have to be consecutive; gaps become NULL entries. <<Structs>>
 
 Fields can be stored as:
 - **INLINE** — small integers (≤13 bits)
-- **DIRECT** — larger primitives, small fixed-size arrays
-- **BLOCK** — nested sub-blocks (sub-structs, inline arrays)
+- **DIRECTDATA** — short byte strings and alignment-1 composites
+- **DIRECT4 / DIRECT8** — 4- or 8-byte values (primitives or composites)
+- **BLOCK** — nested sub-blocks (sub-structs, inline arrays, or custom
+  composites that don't fit a DIRECT slot)
 - **LINK** — anything too big to fit in this block
 
 Tables are allowed to be longer or shorter than the schema expects — extra
@@ -160,13 +172,15 @@ Arrays come in three flavors, chosen by what's inside them:
 
 | Element type | Representation | How it looks on the wire |
 |---|---|---|
-| Fixed-size primitives | **DATA** | Packed contiguously, no per-element overhead |
-| Variable-size byte strings (each ≤ block size) | **SLOTS** | Offset table + raw data |
-| Structs, nested arrays, or large byte strings | **TABLE** | Each element as a BLOCK or LINK entry |
+| Fixed-size primitives / composites | **DATA** | Packed contiguously, no per-element overhead |
+| Variable-size byte strings | **SLOTS + TABLE** | SLOTS for small entries, TABLE for oversized ones |
+| Structs, nested arrays | **TABLE** | Each element as a BLOCK or LINK entry |
 
 If an array doesn't fit in one block, it becomes a **link tree**: a LINKS
-root with DATA, SLOTS, or TABLE leaves. The tree can be arbitrarily deep for
-very large arrays (up to 2^32 elements). <<Arrays>>, <<Link trees>>
+root with leaf blocks. Leaves of a link tree don't have to be the same type —
+for example, a bytestring array's tree can mix SLOTS and TABLE leaves. Trees
+can be up to 5 levels deep (depth limit of 4), which is sufficient for the
+maximum array size of 2^32 elements. <<Arrays>>
 
 #### Link tree traversal
 
@@ -174,8 +188,9 @@ To find element `N` in a link tree:
 
 1. Binary-search the LINKS block for the first link whose `limit > N`.
 2. Subtract the previous link's limit to get a local index within that child.
-3. Descend. If the child is another LINKS block, repeat. If it's a leaf, read
-   the element at the local index.
+3. Descend. If the child is another LINKS block, verify its depth is strictly
+   less than the parent's, then repeat. If it's a leaf, read the element at
+   the local index.
 
 At each step, the reader verifies that the child's actual element count
 matches what the parent's limits claim. <<Traversal>>
@@ -187,28 +202,35 @@ matches what the parent's limits claim. <<Traversal>>
   values. On the wire, it's indistinguishable from an integer.
 - **Text string**: a variable-size array of `u8`, interpreted as UTF-8.
   Not null-terminated.
-- **Byte string**: same as text, without the UTF-8 interpretation.
+- **Byte string**: same as text, without the UTF-8 interpretation. When a
+  direct member of a struct, short byte strings can be stored as DIRECTDATA.
 
 <<Integer-like types>>, <<String types>>
 
 ### Fixed-size arrays
 
 An array whose length is known at schema time (e.g., `[u8; 32]` for a hash
-digest). On the wire, it's just the elements packed contiguously — no header,
-no length field. Since element type and count are both known, total size and
-alignment are known at schema time, so this counts as a fixed-size type.
+digest). On the wire, fixed-size arrays are encoded identically to
+variable-size arrays — the schema-defined count is not stored; readers verify
+it matches. A fixed-size array of fixed-size elements is itself a fixed-size
+type.
 
-Fixed-size arrays nest: `[[u32; 3]; 4]` is 48 bytes with alignment 4.
+**Multi-dimensional arrays of primitives** are flattened: `[[u32; 3]; 4]` is
+stored as a flat DATA array of 12 `u32`s, and the reader reshapes.
+<<Fixed-size arrays>>
 
-If it fits in the containing block, it's stored as DIRECT. Otherwise, it
-becomes a LINK to a DATA block or tree. <<Fixed-size arrays>>
+### Custom composite types
 
-### Custom fixed-size types
+Implementations can define fixed-size composite types (tuples, packed structs,
+fixed-size arrays) with explicit size and alignment. The storage depends on
+size and alignment:
+- **DIRECT4** — exactly 4 bytes, alignment ≤ 4
+- **DIRECT8** — exactly 8 bytes, alignment ≤ 8
+- **DIRECTDATA** — alignment 1 (any size that fits)
+- **BLOCK** embedding a DATA sub-block — everything else
 
-Implementations can define opaque fixed-size types (tuples, packed structs)
-with explicit size and alignment. If ≤36 bytes, stored as DIRECT; larger ones
-can be DIRECT if they fit, or LINK to DATA otherwise.
-<<Custom fixed-size types>>
+There is no general-purpose "direct" slot for arbitrary-size, higher-alignment
+composites; those always go through a BLOCK. <<Custom composite types>>
 
 ### Sketch of a schema language
 
@@ -238,7 +260,7 @@ struct Image {
     width  @0 : u32,
     height @1 : u32,
     pixels @2 : [u8],              # variable-size byte array → DATA
-    hash   @3 : [u8; 32],          # fixed-size 32-byte array → DIRECT
+    hash   @3 : [u8; 32],          # fixed-size 32-byte array → DIRECTDATA or BLOCK
 }
 
 struct Document {
@@ -317,11 +339,11 @@ collision every session — computationally infeasible. <<Rationale>>
 Every block type has validation rules that MUST be checked before trusting
 the data. The common themes: <<Validation>>
 
-- Block size must be at least the type's minimum (2 for DATA, 4 for
-  TABLE/SLOTS/LINKS).
+- Block size must be at least the type's minimum (4 for TABLE, DATA, and
+  SLOTS; 76 for LINKS, which requires at least 2 links).
 - Offsets must be in-bounds and properly aligned.
 - No zero offsets (would create a self-referencing cycle).
 - Type-specific invariants: SLOTS offsets are non-decreasing, LINKS limits
-  are strictly increasing, link limits are never zero.
+  are strictly increasing, and so on.
 
-Failing any check = reject the block. No exceptions.
+Failing any check = reject the block.
