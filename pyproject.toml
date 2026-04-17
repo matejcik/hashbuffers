@@ -6,6 +6,9 @@ readme = "README.md"
 authors = [{ name = "matejcik", email = "ja@matejcik.cz" }]
 requires-python = ">=3.12"
 
+[project.scripts]
+hashbuffers = "hashbuffers.__main__:main"
+
 [build-system]
 requires = ["flit_core>=3.2"]
 build-backend = "flit_core.buildapi"

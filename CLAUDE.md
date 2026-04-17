@@ -18,6 +18,23 @@ This runs, in order: `black`, `isort`, and `pyright`.
 
 Ignore the warning coming from `black` about not being able to format for 3.14.
 
+## Block Inspector
+
+There is a CLI block inspector: `uv run hashbuffers`.
+See [inspector.md](inspector.md) for full docs. Quick usage:
+
+```bash
+# Inspect a hex-encoded block
+uv run hashbuffers 060001002a80
+
+# JSON output
+uv run hashbuffers --json 060001002a80
+
+# Extract and inspect a test vector
+jq -r '.[] | select(.name == "nested_struct") | .store[.root_digest]' vectors_json/positive.json \
+  | xargs uv run hashbuffers
+```
+
 ## Codebase Map
 
 See [.claude/CODEBASE_MAP.md](.claude/CODEBASE_MAP.md) for a full map of source
