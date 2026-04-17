@@ -31,15 +31,20 @@ class Link:
         return w.getvalue()
 
 
+DEPTH_MAX = 4
+
+
 @dataclass
 class LinksBlock(Block[Link]):
     links: list[Link]
 
+    depth: int = 0
     reserved_bits: int = 0
 
     BLOCK_TYPE = BlockType.LINKS
 
     LINKS_MAX: t.ClassVar[int] = (SIZE_MAX - 4) // Link.SIZE
+    LINKS_MIN: t.ClassVar[int] = 2
 
     def alignment(self) -> int:
         return 4
@@ -51,28 +56,33 @@ class LinksBlock(Block[Link]):
         return 4 + Link.SIZE * len(self.links)
 
     @classmethod
-    def build(cls, links: list[Link]) -> t.Self:
+    def build(cls, links: list[Link], depth: int = 0) -> t.Self:
         if len(links) > cls.LINKS_MAX:
             raise ValueError(
                 f"Links block exceeds {cls.LINKS_MAX} links (len: {len(links)})"
             )
-        new = cls(cls.BLOCK_TYPE, 0, links)
+        new = cls(cls.BLOCK_TYPE, 0, links, depth=depth)
         new.size = new.compute_size()
         return new
 
     def _encode_without_validation(self) -> bytes:
         w = self._start_encode()
-        w.write_uint(size=2, value=self.reserved_bits)
+        depth_field = (self.reserved_bits << 3) | self.depth
+        w.write_uint(size=2, value=depth_field)
         for link in self.links:
             w.write(link.encode())
         return w.getvalue()
 
     def validate(self) -> None:
         super().validate()
+        if self.depth > DEPTH_MAX:
+            raise ValueError(
+                f"LINKS block depth {self.depth} exceeds maximum {DEPTH_MAX}"
+            )
         if self.reserved_bits != 0:
             raise ValueError(f"Reserved bits {self.reserved_bits} are not zero")
-        if not self.links:
-            raise ValueError("LINKS block must have at least one link")
+        if len(self.links) < self.LINKS_MIN:
+            raise ValueError(f"LINKS block must have at least {self.LINKS_MIN} links")
         if any(
             self.links[i].limit >= self.links[i + 1].limit
             for i in range(len(self.links) - 1)
@@ -84,7 +94,9 @@ class LinksBlock(Block[Link]):
     @classmethod
     def _decode_without_validation(cls, data: bytes) -> t.Self:
         r, size = cls._start_decode(data)
-        reserved_bits = r.read_uint(2)
+        depth_field = r.read_uint(2)
+        depth = depth_field & 0x7
+        reserved_bits = depth_field >> 3
         data_size = size - 4
         if data_size % Link.SIZE != 0:
             raise ValueError(
@@ -96,7 +108,9 @@ class LinksBlock(Block[Link]):
             links.append(Link.decode(r.read_exact(Link.SIZE)))
         r.done()
 
-        return cls(cls.BLOCK_TYPE, size, links, reserved_bits=reserved_bits)
+        return cls(
+            cls.BLOCK_TYPE, size, links, depth=depth, reserved_bits=reserved_bits
+        )
 
     def __len__(self) -> int:
         return self.links.__len__()

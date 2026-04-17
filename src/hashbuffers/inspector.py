@@ -349,6 +349,7 @@ def _inspect_links(data: bytes, result: InspectionResult) -> dict[str, t.Any]:
         details["raw"] = _hex(data)
         raise ValueError(f"Could not parse LINKS structure: {e}") from e
 
+    details["depth"] = block.depth
     links = []
     for link in block.links:
         links.append(f"digest={link.digest.hex()} limit={link.limit}")

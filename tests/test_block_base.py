@@ -56,7 +56,7 @@ def test_decode_block_roundtrip_slots():
 
 
 def test_decode_block_roundtrip_links():
-    links = LinksBlock.build([Link(b"a" * 32, 100)]).encode()
+    links = LinksBlock.build([Link(b"a" * 32, 100), Link(b"b" * 32, 200)]).encode()
     block = decode_block(links)
     assert isinstance(block, LinksBlock)
 

@@ -26,7 +26,7 @@ Core binary format. Block types as an enum (`TABLE=0, DATA=1, SLOTS=2, LINKS=3`)
 - `TableBlock` — vtable (list of `VTableEntry`) + heap bytes. VTable entry types: `NULL`, `DIRECTDATA`, `INLINE`, `DIRECT4`, `DIRECT8`, `BLOCK`, `LINK`
 - `DataBlock` — self-describing flat array: has `elem_size` and `elem_align` fields in an `elem_info` t16 header. Used for primitive arrays and bytestrings
 - `SlotsBlock` — variable-length entries (offsets array + heap), used for bytestring arrays
-- `LinksBlock` — array of `Link` (digest + cumulative limit), used for link trees
+- `LinksBlock` — array of `Link` (digest + cumulative limit), used for link trees. Has `depth` field (3 bits, max `DEPTH_MAX=4`) bounding tree traversal depth, plus 13 reserved bits. Minimum 2 links.
 - `Link` — 36 bytes: 32-byte digest + u32 limit
 
 ### `src/hashbuffers/fitting.py`
@@ -139,7 +139,7 @@ Vector names: `reserved_header_bit`, `table_too_small`, `vtable_reserved_bits`, 
 - **Block entry**: sub-block embedded on heap (any block type)
 - **Link entry**: 36-byte hash reference to an external block
 - **Outlink**: converting an embedded block to a link when it doesn't fit
-- **Link tree**: recursive `LinksBlock` structure for arrays > 8 KiB. Limits are cumulative.
+- **Link tree**: recursive `LinksBlock` structure for arrays > 8 KiB. Limits are cumulative. Max depth 4 (5 levels of LINKS blocks), enforced by depth countdown field.
 - **FixedArray**: known count of fixed-size elements in a single DATA block
 - **DataArray**: variable count of fixed-size elements, possibly in a link tree
 - **BytestringArray**: variable-length entries via SLOTS blocks, possibly in a link tree

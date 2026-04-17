@@ -776,16 +776,44 @@ def gen_negative() -> list[dict[str, t.Any]]:
     )
 
     # 11. links_reserved_nonzero: LINKS reserved field != 0
-    link_bytes = b"\x00" * 32 + (5).to_bytes(4, "little")  # digest + limit=5
-    links_hdr = BlockType.LINKS.encode(4 + 36)
-    reserved = (0xFFFF).to_bytes(2, "little")
+    link1_bytes = b"\x00" * 32 + (5).to_bytes(4, "little")  # digest + limit=5
+    link2_bytes = b"\x01" * 32 + (10).to_bytes(4, "little")  # digest + limit=10
+    links_hdr = BlockType.LINKS.encode(4 + 72)
+    # depth_field: depth=0 (low 3 bits), reserved=1 (bit 3 set)
+    depth_field = (1 << 3).to_bytes(2, "little")
     vectors.append(
         negative(
             "links_reserved_nonzero",
-            "LINKS block with non-zero reserved field",
+            "LINKS block with non-zero reserved bits in depth field",
             SIMPLE_SCHEMA,
-            links_hdr + reserved + link_bytes,
-            "LINKS block reserved field is not zero",
+            links_hdr + depth_field + link1_bytes + link2_bytes,
+            "LINKS block reserved bits are not zero",
+        )
+    )
+
+    # 11b. links_depth_too_high: LINKS depth exceeds maximum (4)
+    links_hdr = BlockType.LINKS.encode(4 + 72)
+    depth_field = (5).to_bytes(2, "little")  # depth=5, reserved=0
+    vectors.append(
+        negative(
+            "links_depth_too_high",
+            "LINKS block with depth 5 (max is 4)",
+            SIMPLE_SCHEMA,
+            links_hdr + depth_field + link1_bytes + link2_bytes,
+            "LINKS block depth exceeds maximum",
+        )
+    )
+
+    # 11c. links_single_link: LINKS block with only one link
+    links_hdr_1 = BlockType.LINKS.encode(4 + 36)
+    depth_field_0 = (0).to_bytes(2, "little")
+    vectors.append(
+        negative(
+            "links_single_link",
+            "LINKS block with only 1 link (minimum is 2)",
+            SIMPLE_SCHEMA,
+            links_hdr_1 + depth_field_0 + link1_bytes,
+            "LINKS block must have at least 2 links",
         )
     )
 
@@ -793,13 +821,13 @@ def gen_negative() -> list[dict[str, t.Any]]:
     link1 = b"\x00" * 32 + (5).to_bytes(4, "little")
     link2 = b"\x01" * 32 + (3).to_bytes(4, "little")  # 3 < 5 → not increasing
     links_hdr = BlockType.LINKS.encode(4 + 72)
-    reserved = (0).to_bytes(2, "little")
+    depth_field_0 = (0).to_bytes(2, "little")
     vectors.append(
         negative(
             "links_not_increasing",
             "LINKS block with non-increasing limits [5, 3]",
             SIMPLE_SCHEMA,
-            links_hdr + reserved + link1 + link2,
+            links_hdr + depth_field_0 + link1 + link2,
             "LINKS limits are not strictly increasing",
         )
     )

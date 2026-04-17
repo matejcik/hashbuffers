@@ -31,12 +31,14 @@ class TestLinktreeReduce:
         blocks = [make_leaf_block(b"a"), make_leaf_block(b"b")]
         result = linktree_reduce(blocks, store)
         assert isinstance(result, LinksBlock)
+        assert result.depth == 0
 
     def test_many_elements(self, store):
         blocks = [make_leaf_block(b"x") for _ in range(50)]
         result = linktree_reduce(blocks, store)
         assert isinstance(result, LinksBlock)
         assert result.element_count() == 50
+        assert result.depth == 0
 
     def test_tail_optimization(self, store):
         """More than max_links_per_block blocks triggers tail split + recursive call."""
@@ -46,3 +48,5 @@ class TestLinktreeReduce:
         result = linktree_reduce(blocks, store)
         assert isinstance(result, LinksBlock)
         assert result.element_count() == max_links + 1
+        # Root has depth 1: one child is a depth-0 LINKS block, the other is a leaf
+        assert result.depth == 1

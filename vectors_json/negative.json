@@ -251,7 +251,7 @@
   },
   {
     "name": "links_reserved_nonzero",
-    "description": "LINKS block with non-zero reserved field",
+    "description": "LINKS block with non-zero reserved bits in depth field",
     "schema": {
       "version": 1,
       "root": "Root",
@@ -268,11 +268,61 @@
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "628d5e67fd8e2f465767203df7f45f59b35aa43bd2a900b95a3f17ba13917875",
+    "root_digest": "72be8402565548ace303dd79d653df050db30cc3d2aea7b427bb4621e55e828f",
     "store": {
-      "628d5e67fd8e2f465767203df7f45f59b35aa43bd2a900b95a3f17ba13917875": "28c0ffff000000000000000000000000000000000000000000000000000000000000000005000000"
+      "72be8402565548ace303dd79d653df050db30cc3d2aea7b427bb4621e55e828f": "4cc0080000000000000000000000000000000000000000000000000000000000000000000500000001010101010101010101010101010101010101010101010101010101010101010a000000"
     },
-    "error": "LINKS block reserved field is not zero"
+    "error": "LINKS block reserved bits are not zero"
+  },
+  {
+    "name": "links_depth_too_high",
+    "description": "LINKS block with depth 5 (max is 4)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "c26591e1a6283dcfe175d9d1cb4fbc6266d84eac09759f75e4bda335725297cb",
+    "store": {
+      "c26591e1a6283dcfe175d9d1cb4fbc6266d84eac09759f75e4bda335725297cb": "4cc0050000000000000000000000000000000000000000000000000000000000000000000500000001010101010101010101010101010101010101010101010101010101010101010a000000"
+    },
+    "error": "LINKS block depth exceeds maximum"
+  },
+  {
+    "name": "links_single_link",
+    "description": "LINKS block with only 1 link (minimum is 2)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "0df1d6605162dd70864f1133d792c2f41b1c2ef1741eece751f04302dc3d5948",
+    "store": {
+      "0df1d6605162dd70864f1133d792c2f41b1c2ef1741eece751f04302dc3d5948": "28c00000000000000000000000000000000000000000000000000000000000000000000005000000"
+    },
+    "error": "LINKS block must have at least 2 links"
   },
   {
     "name": "links_not_increasing",

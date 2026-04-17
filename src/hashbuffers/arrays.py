@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from .codec import (
+    DEPTH_MAX,
     SIZE_MAX,
     Block,
     DataBlock,
@@ -57,9 +58,17 @@ class LinkTree:
             return relative_index, node
 
         expected_size = node.element_count()
+        max_depth = DEPTH_MAX + 1
 
-        # use a loop instead of recursion to avoid stack overflow -- trees are allowed to be arbitrarily deep
+        # use a loop instead of recursion
         while isinstance(node, LinksBlock) and expected_size > 1:
+            # verify depth against expected from previous round
+            if node.depth >= max_depth:
+                raise ValueError(
+                    f"Child LINKS depth {node.depth} is not less than "
+                    f"parent depth {max_depth}"
+                )
+            max_depth = node.depth
             # verify actual size against expected from previous round
             actual_size = node.element_count()
             if expected_size != actual_size:
@@ -104,13 +113,15 @@ class LinkTree:
             block_stop = block_start + block_size
             return block_start < range_stop and range_start < block_stop
 
-        # Stack contains (block, global_start, expected_size) in DFS order.
+        # Stack contains (block, global_start, expected_size, max_depth) in DFS order.
         # Children are pushed in reverse so stack top = first child to visit.
-        stack: list[tuple[Block, int, int]] = [(self.root, 0, total_size)]
+        stack: list[tuple[Block, int, int, int]] = [
+            (self.root, 0, total_size, DEPTH_MAX + 1)
+        ]
         returned_start = 0
 
         while stack:
-            block, block_start, expected_size = stack.pop()
+            block, block_start, expected_size, max_depth = stack.pop()
             actual_size = block.element_count()
             if actual_size != expected_size:
                 raise ValueError(
@@ -125,8 +136,14 @@ class LinkTree:
                     leaves.append(block)
                 continue
 
+            if block.depth >= max_depth:
+                raise ValueError(
+                    f"Child LINKS depth {block.depth} is not less than "
+                    f"parent depth {max_depth}"
+                )
+
             prev_limit = 0
-            children: list[tuple[Block, int, int]] = []
+            children: list[tuple[Block, int, int, int]] = []
             for link in block:
                 child_size = link.limit - prev_limit
                 child_start = block_start + prev_limit
@@ -134,7 +151,7 @@ class LinkTree:
                 if not overlaps_query(child_start, child_size):
                     continue
                 child = self.store.fetch(link.digest)
-                children.append((child, child_start, child_size))
+                children.append((child, child_start, child_size, block.depth))
 
             stack.extend(reversed(children))
 
@@ -475,12 +492,22 @@ def build_table_array(elements: t.Sequence[TableEntry], store: BlockStore) -> Bl
     return linktree_reduce(result_blocks, store)
 
 
-def linktree_reduce(leaf_blocks: t.Sequence[Block], store: BlockStore) -> Block:
+def linktree_reduce(
+    leaf_blocks: t.Sequence[Block],
+    store: BlockStore,
+    depth: int = 0,
+) -> Block:
     """Reduces a non-empty list to a single root block.
 
     Returns a single Block. If the list has just one element, it is returned.
     Otherwise, builds a link tree from the list and returns its root.
+
+    `depth` is the current depth of the link tree. This value is used directly,
+    the function does not verify depths of passed-in child blocks.
     """
+    if depth > DEPTH_MAX:
+        raise ValueError(f"Depth {depth} exceeds maximum {DEPTH_MAX}")
+
     if not leaf_blocks:
         raise ValueError("Cannot build links tree from empty list")
 
@@ -505,7 +532,7 @@ def linktree_reduce(leaf_blocks: t.Sequence[Block], store: BlockStore) -> Block:
     inner_blocks: list[Block] = []
 
     for chunk in itertools.batched(links, max_links_per_block):
-        block = LinksBlock.build(limits_to_cumulative(chunk))
+        block = LinksBlock.build(limits_to_cumulative(chunk), depth=depth)
         inner_blocks.append(block)
 
     # ...reattach the tail for recursive call
@@ -514,4 +541,4 @@ def linktree_reduce(leaf_blocks: t.Sequence[Block], store: BlockStore) -> Block:
     if len(inner_blocks) == 1:
         return inner_blocks[0]
 
-    return linktree_reduce(inner_blocks, store)
+    return linktree_reduce(inner_blocks, store, depth + 1)

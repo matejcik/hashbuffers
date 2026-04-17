@@ -7,6 +7,7 @@ from .base import SIZE_MAX as SIZE_MAX
 from .base import Block as Block
 from .base import Tagged16 as Tagged16
 from .data import DataBlock as DataBlock
+from .links import DEPTH_MAX as DEPTH_MAX
 from .links import Link as Link
 from .links import LinksBlock as LinksBlock
 from .slots import SlotsBlock as SlotsBlock
