@@ -150,8 +150,8 @@
     "error": "Link limit must not be 0"
   },
   {
-    "name": "block_not_2_aligned",
-    "description": "BLOCK entry at odd offset 13 (must be 2-byte aligned)",
+    "name": "block_inner_alignment",
+    "description": "BLOCK entry at offset 6 (2-aligned) but sub-block is DATA with alignment 4",
     "schema": {
       "version": 1,
       "root": "Root",
@@ -160,33 +160,19 @@
           "fields": [
             {
               "index": 0,
-              "name": "x",
-              "type": "u8"
-            },
-            {
-              "index": 1,
-              "name": "inner",
-              "type": "Inner"
-            }
-          ]
-        },
-        "Inner": {
-          "fields": [
-            {
-              "index": 0,
-              "name": "v",
-              "type": "u8"
+              "name": "vec",
+              "type": "u32[1]"
             }
           ]
         }
       }
     },
     "store_key": "746573742d766563746f7273",
-    "root_digest": "8a34ba64d08d525b520730541035e502a7dd0107d266e6015356839f42283777",
+    "root_digest": "4c010be0b9b384e770e556d51031b5248bb1b1b1b0cbefd63e9ceaae5c3c24f9",
     "store": {
-      "8a34ba64d08d525b520730541035e502a7dd0107d266e6015356839f42283777": "1200020008400da000000000420400000000"
+      "4c010be0b9b384e770e556d51031b5248bb1b1b1b0cbefd63e9ceaae5c3c24f9": "0e00010006a00840044001000000"
     },
-    "error": "BLOCK entry is not 2-byte aligned"
+    "error": "Sub-block alignment requirement not satisfied"
   },
   {
     "name": "subblock_exceeds_parent",
@@ -472,5 +458,55 @@
       "b012c04f4fdb5206191a710b088f772def476e1be41529a89f098f826344042d": "0c0001000620640000000000"
     },
     "error": "DIRECTDATA data exceeds block size"
+  },
+  {
+    "name": "zero_offset",
+    "description": "TABLE entry with offset 0 (invalid: would point to block header, creating a cycle)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "x",
+              "type": "u32"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "a01c7746c547156441c6e35f99a74539c70b1a32be0e9deb2911149c9d161e0a",
+    "store": {
+      "a01c7746c547156441c6e35f99a74539c70b1a32be0e9deb2911149c9d161e0a": "0a000100004000000000"
+    },
+    "error": "Zero offset in TABLE entry"
+  },
+  {
+    "name": "data_too_small",
+    "description": "DATA block with declared size 2 (minimum is 4, need room for header + elem_info)",
+    "schema": {
+      "version": 1,
+      "root": "Root",
+      "structs": {
+        "Root": {
+          "fields": [
+            {
+              "index": 0,
+              "name": "values",
+              "type": "u8[]"
+            }
+          ]
+        }
+      }
+    },
+    "store_key": "746573742d766563746f7273",
+    "root_digest": "05ce13f57a986564433572b1af81dacc95d2fe01cbbb2d753235ba14ece55bda",
+    "store": {
+      "05ce13f57a986564433572b1af81dacc95d2fe01cbbb2d753235ba14ece55bda": "0240"
+    },
+    "error": "DATA block too small (size < 4)"
   }
 ]

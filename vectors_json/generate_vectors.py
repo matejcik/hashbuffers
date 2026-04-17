@@ -506,6 +506,73 @@ def gen_positive() -> list[dict[str, t.Any]]:
         )
     )
 
+    # 22. empty_array: zero-length variable-size array
+    class EmptyArr(HashBuffer):
+        ids: t.Sequence[int] | None = Field(0, Array(U32))
+
+    vectors.append(
+        positive(
+            "empty_array",
+            "Empty variable-length array u32[] stored as BLOCK (cannot be linked because limit=0 is reserved)",
+            EmptyArr,
+            EmptyArr(ids=[]),
+            {"ids": []},
+        )
+    )
+
+    # 23. inline_edge_values: INLINE vs DIRECT4 boundary
+    # INLINE holds 13-bit values: unsigned 0..8191, signed -4096..4095
+    class InlineEdge(HashBuffer):
+        max_inline_u: int | None = Field(0, U32)  # 8191 → INLINE
+        overflow_u: int | None = Field(1, U32)  # 8192 → DIRECT4
+        max_inline_s: int | None = Field(2, I32)  # 4095 → INLINE
+        min_inline_s: int | None = Field(3, I32)  # -4096 → INLINE
+        overflow_s_pos: int | None = Field(4, I32)  # 4096 → DIRECT4
+        overflow_s_neg: int | None = Field(5, I32)  # -4097 → DIRECT4
+
+    vectors.append(
+        positive(
+            "inline_edge_values",
+            "Values at the INLINE/DIRECT4 boundary (13-bit limit: unsigned 0..8191, signed -4096..4095)",
+            InlineEdge,
+            InlineEdge(
+                max_inline_u=8191,
+                overflow_u=8192,
+                max_inline_s=4095,
+                min_inline_s=-4096,
+                overflow_s_pos=4096,
+                overflow_s_neg=-4097,
+            ),
+            {
+                "max_inline_u": 8191,
+                "overflow_u": 8192,
+                "max_inline_s": 4095,
+                "min_inline_s": -4096,
+                "overflow_s_pos": 4096,
+                "overflow_s_neg": -4097,
+            },
+        )
+    )
+
+    # 24. mixed_bytestring_array: SLOTS + TABLE leaves in one link tree
+    # Most elements are small (fit in SLOTS), one is oversized (triggers TABLE fallback)
+    class MixedBytesArr(HashBuffer):
+        blobs: t.Sequence[bytes] | None = Field(0, Array(Bytes))
+
+    small_elems = [b"hello", b"world", b"!"]
+    oversized_elem = bytes(range(256)) * 33  # 8448 bytes > 8185 max SLOTS element
+    mixed_elems = small_elems + [oversized_elem] + [b"after"]
+
+    vectors.append(
+        positive(
+            "mixed_bytestring_array",
+            "Bytestring array with mix of SLOTS leaves (small elements) and TABLE leaf (oversized element as DATA link tree)",
+            MixedBytesArr,
+            MixedBytesArr(blobs=mixed_elems),
+            {"blobs": [e.hex() for e in mixed_elems]},
+        )
+    )
+
     return vectors
 
 
@@ -608,36 +675,32 @@ def gen_negative() -> list[dict[str, t.Any]]:
         )
     )
 
-    # 7. block_not_2_aligned: BLOCK entry at odd offset
-    # With 2 entries: heap_start = 4 + 2*2 = 8.
-    # Put first entry as DIRECT4 at offset 8 (4 bytes), then BLOCK at offset 13 (odd).
-    sub_block = BlockType.TABLE.encode(4) + Tagged16(0, 0).encode()  # minimal TABLE
-    heap = b"\x00" * 4 + b"\x42" + sub_block + b"\x00"  # 4 bytes + 1 byte padding + sub_block
-    block = build_table_bytes(
-        [TableEntryRaw(TableEntryType.DIRECT4, 8), TableEntryRaw(TableEntryType.BLOCK, 13)],
-        heap,
-    )
+    # 7. block_inner_alignment: BLOCK at 2-aligned offset but sub-block needs 4-alignment
+    # The sub-block is a DATA block of u32 elements (alignment 4).
+    # With 1 entry: heap_start = 6. BLOCK at offset 6 → 6 is 2-aligned (valid for
+    # general BLOCK) but the DATA sub-block's alignment is 4, so offset must be
+    # 4-aligned. This tests TABLE validation step 7.4.
+    # DATA sub-block: header(2) + elem_info(2) + one u32(4) = 8 bytes, align=4
+    sub_block = BlockType.DATA.encode(8) + Tagged16(2, 4).encode() + b"\x01\x00\x00\x00"  # align=4, size=4, one u32
+    heap = sub_block
+    block = build_table_bytes([TableEntryRaw(TableEntryType.BLOCK, 6)], heap)
     vectors.append(
         negative(
-            "block_not_2_aligned",
-            "BLOCK entry at odd offset 13 (must be 2-byte aligned)",
+            "block_inner_alignment",
+            "BLOCK entry at offset 6 (2-aligned) but sub-block is DATA with alignment 4",
             {
                 "version": 1,
                 "root": "Root",
                 "structs": {
                     "Root": {
                         "fields": [
-                            {"index": 0, "name": "x", "type": "u8"},
-                            {"index": 1, "name": "inner", "type": "Inner"},
+                            {"index": 0, "name": "vec", "type": "u32[1]"},
                         ]
-                    },
-                    "Inner": {
-                        "fields": [{"index": 0, "name": "v", "type": "u8"}],
                     },
                 },
             },
             block,
-            "BLOCK entry is not 2-byte aligned",
+            "Sub-block alignment requirement not satisfied",
         )
     )
 
@@ -874,6 +937,41 @@ def gen_negative() -> list[dict[str, t.Any]]:
             },
             block,
             "DIRECTDATA data exceeds block size",
+        )
+    )
+
+    # 19. zero_offset: TABLE entry with offset 0
+    # Offset 0 points to the block header itself, creating a cycle.
+    heap = b"\x00" * 4
+    block = build_table_bytes([TableEntryRaw(TableEntryType.DIRECT4, 0)], heap)
+    vectors.append(
+        negative(
+            "zero_offset",
+            "TABLE entry with offset 0 (invalid: would point to block header, creating a cycle)",
+            SIMPLE_SCHEMA,
+            block,
+            "Zero offset in TABLE entry",
+        )
+    )
+
+    # 20. data_too_small: DATA block with size < 4
+    # DATA blocks need at least 4 bytes (header + elem_info)
+    data_block = BlockType.DATA.encode(2)  # just the header, no elem_info
+    vectors.append(
+        negative(
+            "data_too_small",
+            "DATA block with declared size 2 (minimum is 4, need room for header + elem_info)",
+            {
+                "version": 1,
+                "root": "Root",
+                "structs": {
+                    "Root": {
+                        "fields": [{"index": 0, "name": "values", "type": "u8[]"}],
+                    }
+                },
+            },
+            data_block,
+            "DATA block too small (size < 4)",
         )
     )
 
