@@ -52,7 +52,7 @@ everything is built from.
 
 The format supports integers and floats of 1, 2, 4, or 8 bytes. Everything is
 **little-endian**. A value's alignment requirement equals its size (a `u32`
-must sit at a 4-byte-aligned offset). <<Primitives>>
+must sit at a 4-byte-aligned offset). ([Primitives])
 
 | Type | Size | Notes |
 |------|------|-------|
@@ -68,20 +68,20 @@ must sit at a 4-byte-aligned offset). <<Primitives>>
 A `t16` packs 3 parameter bits and a 13-bit number into 2 bytes. Block
 headers and table entries are `t16`s. The 13-bit number caps offsets and
 sizes at 8191 bytes — this is where the ~8 KiB block limit comes from.
-<<Tagged u16>>
+([Tagged u16])
 
 ### Link
 
 A link is 36 bytes: a 32-byte HMAC-SHA256 digest of a child block, plus a
 4-byte `limit` (element count). The digest lets the reader verify the child's
 integrity; the limit tells it how many elements the child contains.
-`limit == 0` is always invalid. <<Link>>
+`limit == 0` is always invalid. ([Link])
 
 
 ## Block types
 
 Every block starts with a 2-byte `t16` header encoding its type and size.
-There are four types. <<Block types>>
+There are four types. ([Block types])
 
 ### TABLE — heterogeneous container
 
@@ -100,7 +100,7 @@ Each entry is a `t16` with a type tag and an offset:
 - **LINK** — offset points to a 36-byte link referencing an external block
 
 This is the workhorse type. Your top-level struct is a TABLE. Arrays of
-complex elements are TABLEs. <<TABLE>>
+complex elements are TABLEs. ([TABLE])
 
 ### DATA — flat array of fixed-size elements
 
@@ -109,7 +109,7 @@ etc.). After the block header comes a `t16` **elem_info** field encoding the
 element alignment and size, followed by the element data with alignment padding
 as needed. The element count is derived from the block size and elem_info.
 
-Use case: an array of `u32`, a byte string, a list of `f64`. <<DATA>>
+Use case: an array of `u32`, a byte string, a list of `f64`. ([DATA])
 
 ### SLOTS — array of variable-length byte strings
 
@@ -117,7 +117,7 @@ A SLOTS block stores multiple variable-length entries. After the header comes
 an array of `u16` offsets — one per entry plus a sentinel — followed by the
 raw data. Entry `n` spans from `offset[n]` to `offset[n+1]`.
 
-Use case: a list of short strings or small byte blobs. <<SLOTS>>
+Use case: a list of short strings or small byte blobs. ([SLOTS])
 
 ### LINKS — inner node of a link tree
 
@@ -133,7 +133,7 @@ to and including that child. This enables binary search to find which child
 holds a given index.
 
 Use case: when an array is too large for one block, a LINKS block stitches
-multiple leaf blocks into a tree. <<LINKS>>
+multiple leaf blocks into a tree. ([LINKS])
 
 
 ## Data model and schema
@@ -142,13 +142,13 @@ The wire format is schema-agnostic — a reader without a schema can parse
 block structure and follow links. But to know what the data *means*, you need
 a schema. The spec doesn't prescribe a schema language; this section describes
 the data model the format can express, then sketches what a schema language
-might look like. <<Overview and motivation>>
+might look like. ([Overview and motivation])
 
 ### Structs
 
 A struct maps to a single TABLE block. Each field gets a schema-defined
 **index** — its position in the table's entry list. Indices must be unique but
-don't have to be consecutive; gaps become NULL entries. <<Structs>>
+don't have to be consecutive; gaps become NULL entries. ([Structs])
 
 Fields can be stored as:
 - **INLINE** — small integers (≤13 bits)
@@ -180,7 +180,7 @@ If an array doesn't fit in one block, it becomes a **link tree**: a LINKS
 root with leaf blocks. Leaves of a link tree don't have to be the same type —
 for example, a bytestring array's tree can mix SLOTS and TABLE leaves. Trees
 can be up to 5 levels deep (depth limit of 4), which is sufficient for the
-maximum array size of 2^32 elements. <<Arrays>>
+maximum array size of 2^32 elements. ([Arrays])
 
 #### Link tree traversal
 
@@ -193,7 +193,7 @@ To find element `N` in a link tree:
    the local index.
 
 At each step, the reader verifies that the child's actual element count
-matches what the parent's limits claim. <<Traversal>>
+matches what the parent's limits claim. ([Traversal])
 
 ### Boolean, enum, string
 
@@ -205,7 +205,7 @@ matches what the parent's limits claim. <<Traversal>>
 - **Byte string**: same as text, without the UTF-8 interpretation. When a
   direct member of a struct, short byte strings can be stored as DIRECTDATA.
 
-<<Integer-like types>>, <<String types>>
+([Integer-like types]), ([String types])
 
 ### Fixed-size arrays
 
@@ -217,7 +217,7 @@ type.
 
 **Multi-dimensional arrays of primitives** are flattened: `[[u32; 3]; 4]` is
 stored as a flat DATA array of 12 `u32`s, and the reader reshapes.
-<<Fixed-size arrays>>
+([Fixed-size arrays])
 
 ### Custom composite types
 
@@ -230,7 +230,7 @@ size and alignment:
 - **BLOCK** embedding a DATA sub-block — everything else
 
 There is no general-purpose "direct" slot for arbitrary-size, higher-alignment
-composites; those always go through a BLOCK. <<Custom composite types>>
+composites; those always go through a BLOCK. ([Custom composite types])
 
 ### Sketch of a schema language
 
@@ -287,7 +287,7 @@ Key observations:
 When encoding, the writer must decide what fits inline in a block and what
 gets externalized as a link. This is called **fitting**, and it proceeds
 bottom-up: serialize children first, then figure out what fits in the parent.
-<<Fitting>>
+([Fitting])
 
 Key rules:
 
@@ -297,13 +297,13 @@ Key rules:
    ones first to maximize the number of inline fields.
 3. **Whatever doesn't fit** gets externalized as a LINK to its own block(s).
 
-<<Struct Member Fitting>>
+([Struct Member Fitting])
 
 ### Alignment
 
 Zero-copy reading requires proper alignment. Every value must sit at an offset
 (from block start) that's a multiple of its alignment. Writers insert padding
-bytes as needed. <<Alignment>>
+bytes as needed. ([Alignment])
 
 A block's own alignment requirement is the maximum alignment of anything
 inside it (minimum 2, for the `t16` header). When a block is nested inside
@@ -313,7 +313,7 @@ When placing fields on the heap, writers should **order them to minimize
 padding**: prefer placing higher-alignment fields where the current offset
 already satisfies their requirement, and use alignment-preserving fields
 (whose size is a multiple of their alignment) to avoid degrading the offset
-for subsequent placements. <<Struct Member Fitting>>
+for subsequent placements. ([Struct Member Fitting])
 
 
 ## Reading: security and validation
@@ -324,20 +324,20 @@ for subsequent placements. <<Struct Member Fitting>>
 a session key (ideally short-lived and random). Before using any block, the
 reader verifies its hash. This means the writer commits to the entire tree
 when providing the root hash — a malicious block repository can't swap blocks
-out later. <<Hashing>>
+out later. ([Hashing])
 
 **What it doesn't protect**: access patterns are visible to the host. A
 malicious repository can observe which blocks the device requests and in what
-order, which might leak information in some threat models. <<Non-goals>>
+order, which might leak information in some threat models. ([Non-goals])
 
 **Why HMAC, not plain SHA-256?** A pre-computed SHA-256 collision could be
 replayed forever. With a fresh session key, an attacker would need a new
-collision every session — computationally infeasible. <<Rationale>>
+collision every session — computationally infeasible. ([Rationale])
 
 ### Validation
 
 Every block type has validation rules that MUST be checked before trusting
-the data. The common themes: <<Validation>>
+the data. The common themes: ([Validation])
 
 - Block size must be at least the type's minimum (4 for TABLE, DATA, and
   SLOTS; 76 for LINKS, which requires at least 2 links).
@@ -347,3 +347,28 @@ the data. The common themes: <<Validation>>
   are strictly increasing, and so on.
 
 Failing any check = reject the block.
+
+
+[Primitives]: wire-format.md#primitives
+[Tagged u16]: wire-format.md#tagged-u16
+[Link]: wire-format.md#link
+[Block types]: wire-format.md#block-types
+[TABLE]: wire-format.md#0b00-table
+[DATA]: wire-format.md#0b01-data
+[SLOTS]: wire-format.md#0b10-slots
+[LINKS]: wire-format.md#0b11-links
+[Overview and motivation]: wire-format.md#overview-and-motivation
+[Structs]: wire-format.md#structs
+[Arrays]: wire-format.md#arrays
+[Traversal]: wire-format.md#traversal
+[Integer-like types]: wire-format.md#integer-like-types
+[String types]: wire-format.md#string-types
+[Fixed-size arrays]: wire-format.md#fixed-size-arrays
+[Custom composite types]: wire-format.md#custom-composite-types
+[Fitting]: wire-format.md#fitting
+[Struct Member Fitting]: wire-format.md#struct-member-fitting
+[Alignment]: wire-format.md#alignment
+[Hashing]: wire-format.md#hashing
+[Non-goals]: wire-format.md#non-goals
+[Rationale]: wire-format.md#rationale
+[Validation]: wire-format.md#validation
